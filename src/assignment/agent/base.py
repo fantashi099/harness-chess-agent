@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import yaml
 from pathlib import Path
 from typing import Any
 
@@ -152,6 +153,7 @@ class Agent:
 
         # TODO(1.1.a): Add machinery to maintain agent state as it takes actions
         # and observes the results.
+        self.history: list[dict[str, Any]] = []
 
     def load_skills(self, skills_path: Path) -> dict[str, dict[str, str]]:
         """Load the skill folders exposed to this agent."""
@@ -164,7 +166,42 @@ class Agent:
         # ``content`` of the skill file for ``invoke_skill``. Reject duplicate
         # names and malformed or missing frontmatter with a clear
         # ``ValueError``.
-        raise NotImplementedError
+        skill_outputs = {}
+        if not skills_path.exists() or not skills_path.is_dir():
+            raise ValueError("skill paths is not a valid directory")
+        list_skill_paths = skills_path.glob("*/SKILL.md")
+        for path in list_skill_paths:
+            text = path.read_text()
+            lines = text.splitlines()
+            if not lines[0] == "---":
+                raise ValueError("missing frontmatter")
+            closing = None
+            for idx in range(1, len(lines)):
+                if lines[idx] == "---":
+                    closing = idx
+                    break
+            if not closing:
+                raise ValueError("unterminated frontmatter")
+            frontmatter_text = "\n".join(lines[1:closing])
+            try:
+                metadata = yaml.safe_load(frontmatter_text)
+            except yaml.YAMLError as e:
+                raise ValueError(f"malformed frontmatter in {e}")
+            if not metadata:
+                raise ValueError("empty frontmatter")
+            if not isinstance(metadata, dict):
+                raise ValueError("not a dict")
+            name = metadata.get("name", None)
+            if not name:
+                raise ValueError("frontmatter is missing name")
+            if name in skill_outputs.keys():
+                raise ValueError(f"duplicate skill name '{name}'")
+            description = metadata.get("description")
+            if not description:
+                raise ValueError("metadata doesn't have description")
+            meta_str = f"name: {name}\ndescription: {description}"
+            skill_outputs[name] = {"metadata": meta_str, "content": text,}
+        return skill_outputs
 
     def query_language_model(self) -> dict[str, Any]:
         """Send one tool-enabled Chat Completions request and normalize it."""
@@ -225,9 +262,18 @@ class Agent:
         # domain-agnostic and construct the prompt in a way that would apply
         # to any of the inheriting domain-specific agents.
 
-        # You want to be careful about which attributes of the class you modify
-        # here as they may also be handled by the subclasses.
-        raise NotImplementedError
+        messages = [
+            {
+                "role": "system",
+                "content": self.system_prompt
+            },
+            {
+                "role": "user",
+                "content": self.task_prompt
+            },
+        ] + self.history
+
+        return messages
 
     def estimate_active_prompt_tokens(self) -> int:
         """Estimate the next prompt, calibrated by the provider's latest usage."""
@@ -330,13 +376,23 @@ class Agent:
             # step. Ensure you identify when the agent has completed the task
             # by setting `Agent.finished`. If the agent exceeds the
             # `step_limit`, raise `StepLimitError`.
+            while not self.finished:
+                if self.steps_taken >= self.step_limit:
+                    raise StepLimitError
+                if self.maybe_compact_context():
+                    print("Compact the history prompt due to exceed context length.")
+                message = self.query_language_model()
+                self.history.append(message)
+                tool_calls = message.get("tool_calls", [])
+                if tool_calls:
+                    for obs in self.execute_tool_calls(tool_calls):
+                        self.history.append(obs)
 
             # TODO(2.2) Call `maybe_compact_context()` before each new action
             # request in your shared loop. It already estimates active tokens
             # and handles the threshold, and tracks compaction events for
             # logging.
 
-            raise NotImplementedError
         finally:
             # This block is provided infrastructure. Do not modify it: a
             # trajectory is required even when a run fails.

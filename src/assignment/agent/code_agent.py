@@ -9,6 +9,7 @@ from assignment.agent.base import (
     DEFAULT_COMPACTION_KEEP_RECENT_STEPS,
     DEFAULT_COMPACTION_MAX_TOKENS,
     Agent,
+    format_tool_output,
 )
 from assignment.agent.tools import EXECUTE_TOOL, SEND_MESSAGE_TOOL
 from assignment.env import Environment
@@ -45,11 +46,26 @@ class CodeAgent(Agent):
 
         # TODO(Part 1.3): Make the `execute` and `send_message` tools available
         # to the agent.
+        self.tools.extend([EXECUTE_TOOL, SEND_MESSAGE_TOOL])
 
         # TODO(1.1.b): Construct the system prompt and task_prompt. These
         # should be usable by the `Agent.build_prompt` method.
+        system_info = {
+            "machine": self.env.machine,
+            "release": self.env.release,
+            "system": self.env.system,
+            "version": self.env.version
+        }
+        self.system_prompt: str = "<system_information>\n" + \
+            json.dumps(system_info, indent=2) + \
+            "\n</system_information>"
+        self.task_prompt: str = self.task
+
         # TODO(1.4): If any skills are available to the agent, make their
         # descriptions/metadata available to the agent in the prompt.
+        if self.skills:
+            catalog = "\n".join(skill["metadata"] for skill in self.skills.values())
+            self.system_prompt += f"...<skills>\n{catalog}\n</skill>"
 
     def execute_tool_calls(
         self, tool_calls: list[dict[str, Any]]
@@ -60,4 +76,52 @@ class CodeAgent(Agent):
         # one message per call (there may be multiple tool calls in one agent
         # response!). Malformed JSON and unknown tools must become recoverable
         # observations relayed to the agent instead of exceptions.
-        raise NotImplementedError
+        messages = []
+        handlers = {
+            "execute": lambda x: self.env.execute(**x), 
+            "send_message": lambda x: x["summary"]
+        }
+        if self.skills:
+            handlers["invoke_skill"] = lambda x: self.skills[x["name"]]["content"]
+        
+        for call in tool_calls:
+            tool_name = call["function"]["name"]
+            tool_call_id = call["id"]
+
+            handler = handlers.get(tool_name)
+            message = {
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "role": "tool",
+            }
+            if handler is None:
+                message["content"] = f"unknown tool '{tool_name}'"
+                messages.append(message)
+                continue
+
+            try:
+                args = json.loads(call["function"]["arguments"])
+            except json.JSONDecodeError as e:
+                message["content"] = f"invalid JSON: '{e}'"
+                messages.append(message)
+                continue
+
+            if not isinstance(args, dict):
+                message["content"] = "arguments must be a JSON object"
+                messages.append(message)
+                continue
+
+            try:
+                result = handler(args)
+            except (TypeError, KeyError) as e:
+                message["content"] = str(e)
+                messages.append(message)
+                continue
+
+            if tool_name == "send_message":
+                self.finished = True
+                message["content"] = result
+            else:
+                message["content"] = format_tool_output(result)
+            messages.append(message)
+        return messages
