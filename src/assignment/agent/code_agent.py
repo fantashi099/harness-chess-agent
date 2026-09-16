@@ -120,8 +120,8 @@ class CodeAgent(Agent):
 
             if tool_name == "send_message":
                 self.finished = True
-                message["content"] = result
-            else:
-                message["content"] = format_tool_output(result)
+            message["content"] = (
+                format_tool_output(result) if isinstance(result, dict) else result
+            )
             messages.append(message)
         return messages
