@@ -173,8 +173,8 @@ class Agent:
         for path in list_skill_paths:
             text = path.read_text()
             lines = text.splitlines()
-            if not lines[0] == "---":
-                raise ValueError("missing frontmatter")
+            if not lines or lines[0] != "---":
+                raise ValueError(f"missing frontmatter in {path}")
             closing = None
             for idx in range(1, len(lines)):
                 if lines[idx] == "---":
@@ -191,10 +191,10 @@ class Agent:
                 raise ValueError("empty frontmatter")
             if not isinstance(metadata, dict):
                 raise ValueError("not a dict")
-            name = metadata.get("name", None)
+            name = metadata.get("name")
             if not name:
                 raise ValueError("frontmatter is missing name")
-            if name in skill_outputs.keys():
+            if name in skill_outputs:
                 raise ValueError(f"duplicate skill name '{name}'")
             description = metadata.get("description")
             if not description:

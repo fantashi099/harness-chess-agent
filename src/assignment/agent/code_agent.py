@@ -65,7 +65,7 @@ class CodeAgent(Agent):
         # descriptions/metadata available to the agent in the prompt.
         if self.skills:
             catalog = "\n".join(skill["metadata"] for skill in self.skills.values())
-            self.system_prompt += f"...<skills>\n{catalog}\n</skill>"
+            self.system_prompt += f"<skills>\n{catalog}\n</skills>"
 
     def execute_tool_calls(
         self, tool_calls: list[dict[str, Any]]
@@ -76,13 +76,19 @@ class CodeAgent(Agent):
         # one message per call (there may be multiple tool calls in one agent
         # response!). Malformed JSON and unknown tools must become recoverable
         # observations relayed to the agent instead of exceptions.
+        def invoke_skill(args):
+            name = args["name"]
+            if name not in self.skills:
+                return f"unknown skill '{name}'. Available: {', '.join(self.skills)}"
+            return self.skills[name]["content"]
+
         messages = []
         handlers = {
-            "execute": lambda x: self.env.execute(**x), 
-            "send_message": lambda x: x["summary"]
+            "execute": lambda args: self.env.execute(**args), 
+            "send_message": lambda args: args["summary"]
         }
         if self.skills:
-            handlers["invoke_skill"] = lambda x: self.skills[x["name"]]["content"]
+            handlers["invoke_skill"] = invoke_skill
         
         for call in tool_calls:
             tool_name = call["function"]["name"]
