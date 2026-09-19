@@ -31,7 +31,21 @@ MAX_OBSERVATION_CHARS = 10_000
 # TODO(Part 2): Write instructions that make the model produce concise working
 # memory for a software agent. The prompt should preserve concrete progress,
 # failures, test results, constraints, and next steps without copying raw output.
-COMPACTION_SYSTEM_PROMPT = ""
+COMPACTION_SYSTEM_PROMPT = """You compress an autonomous agent's older conversation history into concise working memory so the agent can continue its task without the raw transcript. The agent may operate in any domain (software, games, research, planning), so keep the notes domain-neutral and factual.
+
+Produce compact factual notes grouped under these headings:
+
+- Objective: the agent's goal and current plan.
+- Constraints: rules, requirements, and limits that still apply.
+- Current state: the established state of the world the agent is acting on (e.g. board position, environment facts, artifacts created or modified), and the changes already made to it.
+- Actions and results: actions taken and their concrete outcomes, including failed attempts and why they failed.
+- Blockers: open problems, unresolved errors, and anything waiting on a tool result.
+- Next action: the single next step the agent intended to take.
+
+Rules:
+- Use short bullet points; record facts and results, not raw tool output. Keep only short identifiers, names, positions, and essential error strings verbatim.
+- Never invent progress, actions, or results that do not appear in the transcript.
+- Output only the working memory, with no preamble or commentary."""
 
 
 class StepLimitError(Exception):
@@ -311,9 +325,29 @@ class Agent:
         # with all linked tool observations. The resulting summary should change
         # what `build_prompt` emits, and reduce the length of the prompt.
 
-        raise NotImplementedError
+        # Cut at an assistant boundary so the kept suffix never starts with
+        # orphaned tool observations. maybe_compact_context guarantees more
+        # assistant turns than we keep, so the prefix is non-empty.
+        assistant_positions = [
+            i for i, m in enumerate(self.history) if m.get("role") == "assistant"
+        ]
+        cut = assistant_positions[-self.compaction_keep_recent_steps]
+        prefix = self.history[:cut]
+        if not prefix:
+            return [], {}
+        transcript = json.dumps(prefix, ensure_ascii=False, indent=2)
 
-        compaction_prompt = []
+        compaction_prompt = [
+            {"role": "system", "content": COMPACTION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Original task for context:\n{self.task_prompt}\n\n"
+                    f"Older trajectory to compact:\n{transcript}\n\n"
+                    "Write the concise working memory for this older trajectory now."
+                ),
+            },
+        ]
 
         ### Do not modify this section ###
         compaction_response = self.client.chat.completions.create(
@@ -326,6 +360,24 @@ class Agent:
 
         # Use `compaction_response` to update what `build_prompt` emits, but
         # DO NOT modify the object itself. Let the method return it unchanged.
+        # Reasoning models (e.g. glm) can spend the whole token budget on
+        # reasoning_content and return empty content; fall back so the
+        # summary is never silently empty.
+        compaction_message = compaction_response.choices[0].message
+        summary = (compaction_message.content or "").strip() or (
+            getattr(compaction_message, "reasoning_content", "") or ""
+        ).strip()
+        self.history = [
+            {
+                "role": "user",
+                "content": (
+                    "<working_memory>\n"
+                    "Summary of earlier steps (raw transcript compacted away):\n"
+                    f"{summary}\n"
+                    "</working_memory>"
+                ),
+            }
+        ] + self.history[cut:]
 
         ### Do not modify this section ###
         return compaction_prompt, compaction_response.model_dump(mode="json")

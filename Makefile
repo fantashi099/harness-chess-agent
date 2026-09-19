@@ -24,6 +24,7 @@ MODEL_TAG ?= $(subst /,-,$(MODEL))
 COMPACT_THRESHOLD ?= 6000
 STEPS ?= 200
 CHESS_TIMEOUT ?= 1800
+SWEBENCH_TIMEOUT ?= 7200
 OBS_NO_LEGAL_TRAJECTORY ?= artifacts/part3-no-legal-moves-$(MODEL_TAG).json
 OBS_LEGAL_TRAJECTORY ?= artifacts/part3-legal-moves-$(MODEL_TAG).json
 OBS_NO_LEGAL_RESULT ?= artifacts/part3-no-legal-moves-$(MODEL_TAG)-result.json
@@ -76,6 +77,7 @@ run-swebench-agent:
 		--patch-output $(SWEBENCH_PATCH) \
 		--trajectory $(SWEBENCH_TRAJECTORY) \
 		--skills-path $(CODE_SKILLS) \
+		--sandbox-timeout $(SWEBENCH_TIMEOUT) \
 		--step-limit $(STEPS) $(if $(filter-out 0,$(COMPACT_THRESHOLD)),--compact-threshold-tokens $(COMPACT_THRESHOLD),)
 
 run-chess-agent:

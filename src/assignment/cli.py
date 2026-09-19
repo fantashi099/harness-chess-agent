@@ -53,6 +53,12 @@ def _add_code_agent_arguments(parser: argparse.ArgumentParser) -> None:
     """The arguments both code-agent runners take, so they cannot drift apart."""
     parser.add_argument("--model")
     parser.add_argument("--step-limit", type=int, default=100)
+    parser.add_argument(
+        "--sandbox-timeout",
+        type=int,
+        default=1800,
+        help="seconds the Modal sandbox may stay alive before being killed",
+    )
     _add_compaction_argument(parser)
     parser.add_argument(
         "--skills-path",
@@ -101,6 +107,7 @@ def run_code_agent() -> None:
     with Environment(
         image=build_testbed_image(task),
         cwd="/testbed",
+        deployment_timeout=args.sandbox_timeout,
     ) as environment:
         agent = CodeAgent(
             task=task.problem_statement,
@@ -151,7 +158,10 @@ def run_swebench_agent() -> None:
     # but never activate it, so without this `python` is conda's base env and
     # the repository's own dependencies are missing.
     with Environment(
-        image=instance.image, cwd="/testbed", conda_env="testbed"
+        image=instance.image,
+        cwd="/testbed",
+        conda_env="testbed",
+        deployment_timeout=args.sandbox_timeout,
     ) as environment:
         agent = CodeAgent(
             task=instance.problem_statement,

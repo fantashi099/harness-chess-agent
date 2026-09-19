@@ -191,6 +191,7 @@ Run the vendored `django__django-15368` task with a 6,000-token threshold:
 COMPACT_THRESHOLD=6000 \
 SWEBENCH_PATCH=artifacts/django__django-15368.patch \
 SWEBENCH_TRAJECTORY=artifacts/django__django-15368-trajectory.json \
+MODEL=glm-5.2 \
 make run-swebench-agent INSTANCE=django__django-15368
 make check-swebench INSTANCE=django__django-15368
 ```
@@ -202,6 +203,7 @@ baseline. Use distinct output names when retaining both runs, for example:
 COMPACT_THRESHOLD=0 \
 SWEBENCH_PATCH=artifacts/django__django-15368-baseline.patch \
 SWEBENCH_TRAJECTORY=artifacts/django__django-15368-baseline-trajectory.json \
+MODEL=glm-5.2 \
 make run-swebench-agent INSTANCE=django__django-15368
 ```
 
