@@ -4,10 +4,12 @@ version = "0.1.0"
 description = "Assignment 1 scaffold"
 requires-python = ">=3.11"
 dependencies = [
+    "cairosvg>=2.9.1",
     "httpx>=0.28.0",
     "jinja2>=3.1.6",
     "modal>=1.5.3",
     "openai>=2.52.0",
+    "python-chess>=1.999",
     "python-dotenv>=1.2.2",
     "pyyaml>=6.0",
     "swe-rex[modal]",

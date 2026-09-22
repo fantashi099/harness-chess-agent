@@ -94,12 +94,12 @@ class CodeAgent(Agent):
             tool_name = call["function"]["name"]
             tool_call_id = call["id"]
 
-            handler = handlers.get(tool_name)
             message = {
                 "tool_call_id": tool_call_id,
                 "name": tool_name,
                 "role": "tool",
             }
+            handler = handlers.get(tool_name)
             if handler is None:
                 message["content"] = f"unknown tool '{tool_name}'"
                 messages.append(message)

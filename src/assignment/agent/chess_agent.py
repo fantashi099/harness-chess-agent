@@ -107,9 +107,12 @@ class ChessAgent(Agent):
         )
 
         # TODO(Part 3): Register the play_move tool schema from tools.py.
+        self.tools.append(PLAY_MOVE_TOOL)
+        self.programmatic_tools = programmatic_tools
 
         if programmatic_tools:
             self.tools.append(RUN_PYTHON_TOOL)
+            self.tools.append(SIMULATE_MOVE_TOOL)
 
         # run_python always executes in the sandbox, on the port the chess
         # server is listening on there.
@@ -174,7 +177,59 @@ class ChessAgent(Agent):
         # 4. Link every observation to its call with tool_call_id.
         # 5. Turn malformed, unknown, rejected, or extra parallel calls into
         #    recoverable <chess_error> observations instead of crashing.
+        def format_error_message(error):
+            return f"<chess_error>{error}</chess_error>"
+        
+        messages = []
+        played_move = False
+        handlers = {
+            "play_move": lambda args: _play_move(self.chess_client, args),
+        }
+        if self.skills:
+            handlers["invoke_skill"] = lambda args: _invoke_skill(self.skills, args)
+        if self.programmatic_tools:
+            handlers["simulate_move"] = lambda args: _simulate_move(self.chess_client, args)
+            handlers["run_python"] = lambda args: _run_python(self.env, self.python_sandbox_port, args)
+
+        for call in tool_calls:
+            tool_name = call["function"]["name"]
+            tool_call_id = call["id"]
+
+            message = {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+            }
+            handler = handlers.get(tool_name)
+            if handler is None:
+                message["content"] = format_error_message(f"unknown tool '{tool_name}'")
+                messages.append(message)
+                continue
+
+            args = call["function"]["arguments"]
+            if tool_name == "play_move":
+                if played_move:
+                    message["content"] = format_error_message(
+                        "only one play_move per response; position already changed"
+                    )
+                    messages.append(message)
+                    continue
+                played_move = True
+            result = handler(args)
+            if tool_name == "play_move" and not result.startswith("<chess_error>"):
+                current_state = json.loads(result)
+                self.last_state = current_state
+                self.finished = bool(current_state.get("game_over"))
+                result = self.format_state(current_state)
+            if tool_name == "run_python" and not result.startswith("<chess_error>"):
+                current_state = _game_state(self.chess_client)
+                self.last_state = current_state
+                self.finished = bool(current_state.get("game_over"))
+                result += "\n" + self.format_state(current_state)
+            message["content"] = result
+            messages.append(message)
+
+        return messages
 
         # TODO(Part 3.3-4): add cases for simulate_move and run_python, with
         # linked observations and recoverable errors, just like the old tool.
-        raise NotImplementedError
