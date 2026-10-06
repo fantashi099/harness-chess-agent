@@ -77,6 +77,9 @@ def format_chess_state(
 class ChessAgent(Agent):
     """An agent that plays White against the server's deterministic Black bot."""
 
+    reasoning_effort = "low"
+    max_completion_tokens = 8192
+
     def __init__(
         self,
         environment: Environment,
@@ -146,11 +149,22 @@ class ChessAgent(Agent):
                 "skill's name to load its instructions, and follow them in place "
                 f"of your default approach.\n\n<skills>\n{catalog}\n</skills>\n"
             )
-        opening_instruction = (
-            "Choose one move from legal_moves and call play_move."
-            if include_legal_moves
-            else "Infer a legal move from the board and FEN, then call play_move."
-        )
+        if programmatic_tools and self.skills:
+            opening_instruction = (
+                "First invoke the relevant skill. Then use run_python to follow it: "
+                "search with simulate_move and commit exactly one move with play_move."
+            )
+        elif programmatic_tools:
+            opening_instruction = (
+                "Use run_python to search with simulate_move and commit exactly one "
+                "move with play_move."
+            )
+        elif include_legal_moves:
+            opening_instruction = "Choose one move from legal_moves and call play_move."
+        else:
+            opening_instruction = (
+                "Infer a legal move from the board and FEN, then call play_move."
+            )
         self.task_prompt = (
             f"Play this game as White. {opening_instruction}\n\n"
             f"{self.format_state(initial_state)}"
@@ -181,7 +195,7 @@ class ChessAgent(Agent):
             return f"<chess_error>{error}</chess_error>"
         
         messages = []
-        played_move = False
+        position_changing_call_seen = False
         handlers = {
             "play_move": lambda args: _play_move(self.chess_client, args),
         }
@@ -207,14 +221,15 @@ class ChessAgent(Agent):
                 continue
 
             args = call["function"]["arguments"]
-            if tool_name == "play_move":
-                if played_move:
+            if tool_name in {"play_move", "run_python"}:
+                if position_changing_call_seen:
                     message["content"] = format_error_message(
-                        "only one play_move per response; position already changed"
+                        "only one position-changing tool per response; position may "
+                        "already have changed"
                     )
                     messages.append(message)
                     continue
-                played_move = True
+                position_changing_call_seen = True
             result = handler(args)
             if tool_name == "play_move" and not result.startswith("<chess_error>"):
                 current_state = json.loads(result)
@@ -222,10 +237,18 @@ class ChessAgent(Agent):
                 self.finished = bool(current_state.get("game_over"))
                 result = self.format_state(current_state)
             if tool_name == "run_python" and not result.startswith("<chess_error>"):
-                current_state = _game_state(self.chess_client)
-                self.last_state = current_state
-                self.finished = bool(current_state.get("game_over"))
-                result += "\n" + self.format_state(current_state)
+                try:
+                    current_state = _game_state(self.chess_client)
+                except Exception as exc:
+                    result += "\n" + format_error_message(
+                        "Python finished, but refreshing the live board failed after "
+                        f"retries: {exc}. Call run_python with empty code to retry "
+                        "the refresh before choosing another move."
+                    )
+                else:
+                    self.last_state = current_state
+                    self.finished = bool(current_state.get("game_over"))
+                    result += "\n" + self.format_state(current_state)
             message["content"] = result
             messages.append(message)
 

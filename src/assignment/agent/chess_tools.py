@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from typing import Any
 
 import httpx
@@ -60,10 +61,10 @@ def _simulate_move(client: httpx.Client, arguments: str) -> str:
         move = args.get("move")
         if not isinstance(fen, str):
             raise ValueError("Argument 'fen' must be a string")
-        if move and not isinstance(move, str):
+        if move is not None and not isinstance(move, str):
             raise ValueError("Argument 'move' must be a UCI string, e.g. 'e2e4'.")
         payload = {"fen": fen}
-        if move:
+        if move is not None:
             payload["move"] = move
         return json.dumps(_request_state(client, "POST", "/api/simulate", json=payload))
     except httpx.HTTPError as exc:
@@ -167,4 +168,10 @@ def _game_state(client: httpx.Client, reset: bool = False) -> dict:
     """Read the live game, or start a new one and read the opening position."""
 
     method, endpoint = ("POST", "/api/reset") if reset else ("GET", "/api/state")
-    return _request_state(client, method, endpoint)
+    for attempt in range(3):
+        try:
+            return _request_state(client, method, endpoint)
+        except httpx.HTTPError:
+            if attempt == 2:
+                raise
+            time.sleep(0.25 * (2**attempt))

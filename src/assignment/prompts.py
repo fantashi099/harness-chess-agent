@@ -32,9 +32,15 @@ active, make a tool call instead of merely describing a move in text."""
 
 PROGRAMMATIC_CHESS_PROMPT = """Two additional tools are available: simulate_move and run_python.
 You may use Python to explore hypothetical positions before choosing a move.
-simulate_move(fen, move=None) returns a dict with FEN, squares, turn, legal_moves,
-and terminal status. simulate_move does not change the state of the board but allows for simulating
-the effects of taking an action on the board. Write Python code that uses simulate move to search
-for a good move to play at this state. You can write more complex search procedures with lookahead
-and complex logic to choose the move. Once you have chosen a move, write a call to play_move at
-the end of the Python code snippet to actually play that move."""
+simulate_move(fen, move=None) returns a dict with fen, squares, turn, legal_moves,
+in_check, and terminal status. Use those returned fields directly; do not write a
+FEN parser or reimplement attack detection. Keep each Python snippet concise. Use
+simulate_move to search for a good move, then call play_move exactly once as the
+last action in the snippet.
+
+Chess-quality rule: this rule takes priority over a skill's alphabetical
+tie-break. When primary search scores tie, prefer castling, developing a knight or
+bishop from its starting square, and advancing a central pawn, in that order.
+Penalize early king, queen, and rook moves, returning a developed piece to its
+starting square, and repeating recent moves. Use alphabetical order only if these
+chess tie-breaks are also equal."""

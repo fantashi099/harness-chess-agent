@@ -82,6 +82,9 @@ def rough_message_tokens(messages: list[dict[str, Any]]) -> int:
 class Agent:
     """Base class for a ReAct agent with pluggable tools."""
 
+    reasoning_effort = "medium"
+    max_completion_tokens = 4096
+
     def __init__(
         self,
         environment: Environment,
@@ -232,8 +235,8 @@ class Agent:
                 model=self.model,
                 messages=messages,
                 tools=self.tools,
-                reasoning_effort="medium",
-                max_completion_tokens=4096,
+                reasoning_effort=self.reasoning_effort,
+                max_completion_tokens=self.max_completion_tokens,
             )
         except Exception as exc:
             print(
@@ -245,6 +248,15 @@ class Agent:
         self.api_responses.append(response.model_dump(mode="json"))
         self.steps_taken += 1
         message = self.process_response(response)
+        finish_reason = response.choices[0].finish_reason
+        if finish_reason == "length" and not message.get("tool_calls"):
+            partial = (message.get("content") or "").strip()
+            message = {
+                "role": "assistant",
+                "content": (
+                    f"{partial}\n" if partial else ""
+                ) + "[Output limit reached before an action; retry with a concise tool call.]",
+            }
         tool_names = [
             call.get("function", {}).get("name", "unknown")
             for call in message.get("tool_calls", [])
