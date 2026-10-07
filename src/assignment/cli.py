@@ -12,6 +12,7 @@ from assignment.agent import (
     CodeAgent,
 )
 from assignment.chess_sandbox import ChessSandbox
+from assignment.chess_server import add_opponent_arguments, opponent_kwargs
 from assignment.task import Task
 from assignment.env import Environment
 from assignment.utils.image import build_testbed_image
@@ -200,6 +201,7 @@ def run_chess_agent() -> None:
     parser.add_argument("--skills-path", type=Path)
     parser.add_argument("--programmatic-tools", action="store_true")
     parser.add_argument("--omit-legal-moves", action="store_true")
+    add_opponent_arguments(parser)
     parser.add_argument("--sandbox-timeout", type=int, default=1800)
     # No defaults, as with the code agents: the patch to play with and the log to
     # write are named per run.
@@ -222,6 +224,7 @@ def run_chess_agent() -> None:
         task=args.task,
         patch=patch,
         deployment_timeout=args.sandbox_timeout,
+        **opponent_kwargs(args),
     ) as sandbox:
         print(f"Chess server: {sandbox.server_url}", flush=True)
         agent = ChessAgent(

@@ -7,10 +7,12 @@ PYTHONPATH. Simulation reconstructs a position from FEN, never the live game.
 from __future__ import annotations
 
 import argparse
+from contextlib import asynccontextmanager
 
 import chess
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 class SimulationRequest(BaseModel):
@@ -70,10 +72,49 @@ def simulate_position(fen: str, move: str | None = None) -> dict:
         "repetition_history_available": False,
     }
 
-def create_app(game=None) -> FastAPI:
+def add_opponent_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--opponent", choices=["minimax", "stockfish"], default="minimax")
+    parser.add_argument("--stockfish-path", help="engine executable on the server host")
+    parser.add_argument("--stockfish-time", type=float, default=0.2,
+                        help="seconds per Black move, greater than 0 and at most 10")
+    parser.add_argument("--stockfish-elo", type=int, help="limit strength to the engine's supported Elo range")
+
+
+def opponent_kwargs(args: argparse.Namespace) -> dict:
+    return {key: getattr(args, key) for key in
+            ("opponent", "stockfish_path", "stockfish_time", "stockfish_elo")}
+
+
+def create_app(game=None, *, opponent="minimax", stockfish_path=None,
+               stockfish_time=0.2, stockfish_elo=None) -> FastAPI:
     from chess_app.server import create_app as create_chess_app
 
+    if opponent not in {"minimax", "stockfish"}:
+        raise ValueError("opponent must be 'minimax' or 'stockfish'.")
+    if game is not None and opponent != "minimax":
+        raise ValueError("Pass either a game or an opponent mode.")
+    if opponent == "stockfish":
+        if __package__:
+            from assignment.stockfish_game import StockfishGame, OpponentError
+        else:
+            from stockfish_game import StockfishGame, OpponentError
+        game = StockfishGame(stockfish_path, stockfish_time, stockfish_elo)
+
     app = create_chess_app(game)
+    if opponent == "stockfish":
+        @asynccontextmanager
+        async def lifespan(app):
+            game.start()
+            try:
+                yield
+            finally:
+                game.close()
+
+        app.router.lifespan_context = lifespan
+
+        @app.exception_handler(OpponentError)
+        async def opponent_error(request, exc):
+            return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     @app.post("/api/simulate")
     def simulate(request: SimulationRequest) -> dict:
@@ -88,5 +129,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Chess server with stateless simulation")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    add_opponent_arguments(parser)
     args = parser.parse_args()
-    uvicorn.run(create_app(), host=args.host, port=args.port)
+    uvicorn.run(create_app(**opponent_kwargs(args)), host=args.host, port=args.port)

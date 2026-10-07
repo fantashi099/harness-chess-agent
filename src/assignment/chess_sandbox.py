@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shlex
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -19,6 +20,7 @@ import httpx
 from assignment.agent.chess_tools import CHESS_PORT
 from assignment.task import Task
 from assignment.env import Environment
+from assignment.chess_server import add_opponent_arguments, opponent_kwargs
 from assignment.utils.image import build_testbed_image
 
 TESTBED = "/testbed"
@@ -34,6 +36,7 @@ SANDBOX_FILES = (
     Path(__file__).with_name("chess_server.py"),
     Path(__file__).parent / "agent" / "chess_tools.py",
     Path(__file__).with_name("sandbox_python.py"),
+    Path(__file__).with_name("stockfish_game.py"),
 )
 
 def _with_assignment_files(image):
@@ -66,6 +69,10 @@ class ChessSandbox(Environment):
         runtime_timeout: float = 600,
         deployment_timeout: float = 1800,
         server_timeout: float = 30,
+        opponent: str = "minimax",
+        stockfish_path: str | None = None,
+        stockfish_time: float = 0.2,
+        stockfish_elo: int | None = None,
     ):
         """Launch the sandbox and block until the server answers.
 
@@ -81,7 +88,18 @@ class ChessSandbox(Environment):
             runtime_timeout: Seconds a single command may run.
             deployment_timeout: Seconds the sandbox may stay alive.
             server_timeout: Seconds to wait for `/health` to succeed.
+            opponent: Black's engine, either the default minimax or Stockfish.
+            stockfish_path: Executable path inside Modal, not on the laptop.
+            stockfish_time: Seconds per Black move (maximum 10).
+            stockfish_elo: Optional strength limit supported by the engine.
         """
+        if opponent not in {"minimax", "stockfish"}:
+            raise ValueError("opponent must be 'minimax' or 'stockfish'.")
+        if opponent == "stockfish" and not 0 < stockfish_time <= 10:
+            raise ValueError("Stockfish move time must be between 0 and 10 seconds.")
+        self.opponent = opponent
+        self.stockfish_path, self.stockfish_time, self.stockfish_elo = (
+            stockfish_path, stockfish_time, stockfish_elo)
         if not 1 <= port <= 65535:
             raise ValueError(f"Invalid port: {port}")
 
@@ -90,8 +108,11 @@ class ChessSandbox(Environment):
         self.server_url = ""
         self._client: httpx.Client | None = None
 
+        image = build_testbed_image(self.task, strict=strict)
+        if opponent == "stockfish":
+            image = image.apt_install("stockfish")
         super().__init__(
-            image=_with_assignment_files(build_testbed_image(self.task, strict=strict)),
+            image=_with_assignment_files(image),
             startup_timeout=startup_timeout,
             runtime_timeout=runtime_timeout,
             deployment_timeout=deployment_timeout,
@@ -127,9 +148,17 @@ class ChessSandbox(Environment):
             raise RuntimeError(f"Patch did not apply:\n{applied['stderr'].strip()}")
 
     def _start_server(self, timeout: float) -> None:
+        opponent_args = []
+        if self.opponent == "stockfish":
+            opponent_args = ["--opponent", "stockfish", "--stockfish-time", str(self.stockfish_time)]
+            if self.stockfish_path is not None:
+                opponent_args += ["--stockfish-path", self.stockfish_path]
+            if self.stockfish_elo is not None:
+                opponent_args += ["--stockfish-elo", str(self.stockfish_elo)]
         command = (
             "nohup python /opt/assignment/chess_server.py "
             f"--host 0.0.0.0 --port {self.port} "
+            f"{shlex.join(opponent_args)} "
             f"> {SERVER_LOG} 2>&1 < /dev/null & echo $!"
         )
         result = self.execute(command, cwd=TESTBED)
@@ -211,6 +240,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Serve the chess app from a Modal sandbox")
     parser.add_argument("--patch", type=Path, help="Fix to apply before serving, e.g. the part 1 output")
     parser.add_argument("--task", type=Path, help="Task directory to serve the testbed of")
+    add_opponent_arguments(parser)
     parser.add_argument(
         "--sandbox-timeout",
         type=int,
@@ -223,6 +253,7 @@ def main() -> None:
         task=args.task,
         patch=args.patch,
         deployment_timeout=args.sandbox_timeout,
+        **opponent_kwargs(args),
     ) as sandbox:
         print(f"Chess sandbox ready: {sandbox.server_url}", flush=True)
         try:
