@@ -44,3 +44,14 @@ bishop from its starting square, and advancing a central pawn, in that order.
 Penalize early king, queen, and rook moves, returning a developed piece to its
 starting square, and repeating recent moves. Use alphabetical order only if these
 chess tie-breaks are also equal."""
+
+FIXED_CHESS_PROMPT = """You are playing White against the deterministic Black bot.
+Use select_and_play with {} exactly once per turn. This tool runs the fixed v2
+policy in the sandbox, checks the current position, and commits its chosen move.
+The returned observation includes the decision summary, Black's reply, and the
+next live state. Continue until game_over: true.
+
+You cannot submit a different move, write Python, or bypass the policy. After a
+tool error, use the latest refreshed state and retry select_and_play. If several
+tool calls are emitted together, only one position-changing call is accepted.
+When skills are available, invoke select-move-v2 once before playing."""

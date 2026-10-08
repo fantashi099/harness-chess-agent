@@ -1,5 +1,23 @@
 """Tool definitions exposed to the model, in the OpenAI tool-calling format."""
 
+SELECT_AND_PLAY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "select_and_play",
+        "description": (
+            "Run the fixed v2 two-ply chess policy on the latest observed position "
+            "and commit exactly its selected White move. Black replies automatically. "
+            "The server checks the position and prevents duplicate commits. "
+            "Call once per turn until game_over; no move or code arguments."
+        ),
+        "strict": True,
+        "parameters": {
+            "type": "object", "properties": {}, "required": [],
+            "additionalProperties": False,
+        },
+    },
+}
+
 EXECUTE_TOOL = {
     "type": "function",
     "function": {

@@ -12,6 +12,7 @@ from assignment.agent import (
     CodeAgent,
 )
 from assignment.chess_sandbox import ChessSandbox
+from assignment.chess_artifacts import save_fixed_run
 from assignment.chess_server import add_opponent_arguments, opponent_kwargs
 from assignment.task import Task
 from assignment.env import Environment
@@ -199,7 +200,12 @@ def run_chess_agent() -> None:
     parser.add_argument("--step-limit", type=int, default=200)
     _add_compaction_argument(parser)
     parser.add_argument("--skills-path", type=Path)
-    parser.add_argument("--programmatic-tools", action="store_true")
+    chess_modes = parser.add_mutually_exclusive_group()
+    chess_modes.add_argument("--programmatic-tools", action="store_true")
+    chess_modes.add_argument(
+        "--fixed-chess-policy", choices=["v2"],
+        help="execute the fixed v2 policy in the sandbox; no raw move/code tools",
+    )
     parser.add_argument("--omit-legal-moves", action="store_true")
     add_opponent_arguments(parser)
     parser.add_argument("--sandbox-timeout", type=int, default=1800)
@@ -224,6 +230,7 @@ def run_chess_agent() -> None:
         task=args.task,
         patch=patch,
         deployment_timeout=args.sandbox_timeout,
+        fixed_chess_policy=args.fixed_chess_policy,
         **opponent_kwargs(args),
     ) as sandbox:
         print(f"Chess server: {sandbox.server_url}", flush=True)
@@ -239,10 +246,23 @@ def run_chess_agent() -> None:
             compaction_max_tokens=args.compaction_max_tokens,
             programmatic_tools=args.programmatic_tools,
             include_legal_moves=not args.omit_legal_moves,
+            fixed_chess_policy=args.fixed_chess_policy,
         )
-        agent.run()
+        if args.fixed_chess_policy:
+            stop_reason = "incomplete"
+            try:
+                agent.run()
+                stop_reason = "terminal" if agent.finished else "returned_nonterminal"
+            except BaseException as exc:
+                stop_reason = type(exc).__name__
+                raise
+            finally:
+                save_fixed_run(agent, args.result, patch, stop_reason)
+        else:
+            agent.run()
 
-    args.result.parent.mkdir(parents=True, exist_ok=True)
-    args.result.write_text(json.dumps(agent.last_state, indent=2))
+    if not args.fixed_chess_policy:
+        args.result.parent.mkdir(parents=True, exist_ok=True)
+        args.result.write_text(json.dumps(agent.last_state, indent=2))
     print(f"Result: {args.result}")
     print(f"Trajectory: {trajectory}")

@@ -19,17 +19,21 @@ from assignment.agent.chess_tools import (
     CHESS_PORT,
     _run_python,
     _simulate_move,
+    _select_and_play,
 )
+from assignment.agent.chess_policy import position_id
 from assignment.agent.tools import (
     INVOKE_SKILL_TOOL,
     PLAY_MOVE_TOOL,
     RUN_PYTHON_TOOL,
     SIMULATE_MOVE_TOOL,
+    SELECT_AND_PLAY_TOOL,
 )
 from assignment.prompts import (
     CHESS_AGENT_NO_LEGAL_MOVES_PROMPT_TEMPLATE,
     CHESS_AGENT_SYSTEM_PROMPT_TEMPLATE,
     PROGRAMMATIC_CHESS_PROMPT,
+    FIXED_CHESS_PROMPT,
 )
 from assignment.env import Environment
 
@@ -96,7 +100,12 @@ class ChessAgent(Agent):
         programmatic_tools: bool = False,
         python_sandbox_port: int = CHESS_PORT,
         include_legal_moves: bool = True,
+        fixed_chess_policy: str | None = None,
     ):
+        if fixed_chess_policy not in {None, "v2"}:
+            raise ValueError("fixed_chess_policy must be None or 'v2'.")
+        if fixed_chess_policy and programmatic_tools:
+            raise ValueError("Fixed policy and arbitrary programmatic tools are separate modes.")
         super().__init__(
             environment=environment,
             model=model,
@@ -110,7 +119,11 @@ class ChessAgent(Agent):
         )
 
         # TODO(Part 3): Register the play_move tool schema from tools.py.
-        self.tools.append(PLAY_MOVE_TOOL)
+        self.fixed_chess_policy = fixed_chess_policy
+        self.chess_decisions: list[dict[str, Any]] = []
+        self.tools.append(SELECT_AND_PLAY_TOOL if fixed_chess_policy else PLAY_MOVE_TOOL)
+        if fixed_chess_policy:
+            self.max_completion_tokens = 512
         self.programmatic_tools = programmatic_tools
 
         if programmatic_tools:
@@ -139,7 +152,7 @@ class ChessAgent(Agent):
             if include_legal_moves
             else CHESS_AGENT_NO_LEGAL_MOVES_PROMPT_TEMPLATE
         )
-        self.system_prompt = prompt_template.render()
+        self.system_prompt = FIXED_CHESS_PROMPT if fixed_chess_policy else prompt_template.render()
         if programmatic_tools:
             self.system_prompt += "\n\n" + PROGRAMMATIC_CHESS_PROMPT
         if self.skills:
@@ -149,7 +162,12 @@ class ChessAgent(Agent):
                 "skill's name to load its instructions, and follow them in place "
                 f"of your default approach.\n\n<skills>\n{catalog}\n</skills>\n"
             )
-        if programmatic_tools and self.skills:
+        if fixed_chess_policy:
+            opening_instruction = (
+                "First invoke select-move-v2, then call select_and_play with {} each turn."
+                if self.skills else "Call select_and_play with {} each turn."
+            )
+        elif programmatic_tools and self.skills:
             opening_instruction = (
                 "First invoke the relevant skill. Then use run_python to follow it: "
                 "search with simulate_move and commit exactly one move with play_move."
@@ -196,9 +214,12 @@ class ChessAgent(Agent):
         
         messages = []
         position_changing_call_seen = False
-        handlers = {
-            "play_move": lambda args: _play_move(self.chess_client, args),
-        }
+        handlers = (
+            {"select_and_play": lambda args: _select_and_play(
+                self.chess_client, args, position_id(self.last_state))}
+            if self.fixed_chess_policy else
+            {"play_move": lambda args: _play_move(self.chess_client, args)}
+        )
         if self.skills:
             handlers["invoke_skill"] = lambda args: _invoke_skill(self.skills, args)
         if self.programmatic_tools:
@@ -221,7 +242,7 @@ class ChessAgent(Agent):
                 continue
 
             args = call["function"]["arguments"]
-            if tool_name in {"play_move", "run_python"}:
+            if tool_name in {"play_move", "run_python", "select_and_play"}:
                 if position_changing_call_seen:
                     message["content"] = format_error_message(
                         "only one position-changing tool per response; position may "
@@ -231,6 +252,41 @@ class ChessAgent(Agent):
                     continue
                 position_changing_call_seen = True
             result = handler(args)
+            if tool_name == "select_and_play":
+                if result.startswith("<chess_error>"):
+                    # A lost response may follow a successful commit. Refresh
+                    # rather than choosing from the previous root again.
+                    try:
+                        current_state = _game_state(self.chess_client)
+                    except Exception as exc:
+                        result += "\n" + format_error_message(f"State refresh failed: {exc}")
+                    else:
+                        self.last_state = current_state
+                        self.finished = bool(current_state.get("game_over"))
+                        result += "\n" + self.format_state(current_state)
+                else:
+                    payload = json.loads(result)
+                    self.last_state = payload["state"]
+                    self.finished = bool(self.last_state.get("game_over"))
+                    decision = payload.get("decision")
+                    summary = None
+                    if decision is not None:
+                        if decision["chosen_move"] != decision["committed_move"]:
+                            raise RuntimeError("Server committed a move different from its policy.")
+                        if not any(d["position_id"] == decision["position_id"]
+                                   for d in self.chess_decisions):
+                            self.chess_decisions.append(decision)
+                        summary = {
+                            key: decision.get(key) for key in (
+                                "policy_version", "position_id", "root_fen", "chosen_move",
+                                "primary_score", "secondary", "pv", "completed_depth",
+                                "simulator_calls", "reason", "engine_move",
+                            )
+                        }
+                        summary["primary_tie_count"] = len(decision["primary_ties"])
+                    result = json.dumps({"chess_decision": summary,
+                                         "replayed": payload.get("replayed", False)})
+                    result += "\n" + self.format_state(self.last_state)
             if tool_name == "play_move" and not result.startswith("<chess_error>"):
                 current_state = json.loads(result)
                 self.last_state = current_state

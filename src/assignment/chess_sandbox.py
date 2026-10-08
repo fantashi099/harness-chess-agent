@@ -36,6 +36,8 @@ SANDBOX_FILES = (
     Path(__file__).with_name("chess_server.py"),
     Path(__file__).parent / "agent" / "chess_tools.py",
     Path(__file__).with_name("sandbox_python.py"),
+    Path(__file__).parent / "agent" / "chess_policy.py",
+    Path(__file__).with_name("fixed_chess_server.py"),
     Path(__file__).with_name("stockfish_game.py"),
 )
 
@@ -69,6 +71,7 @@ class ChessSandbox(Environment):
         runtime_timeout: float = 600,
         deployment_timeout: float = 1800,
         server_timeout: float = 30,
+        fixed_chess_policy: str | None = None,
         opponent: str = "minimax",
         stockfish_path: str | None = None,
         stockfish_time: float = 0.2,
@@ -93,6 +96,9 @@ class ChessSandbox(Environment):
             stockfish_time: Seconds per Black move (maximum 10).
             stockfish_elo: Optional strength limit supported by the engine.
         """
+        if fixed_chess_policy not in {None, "v2"}:
+            raise ValueError("fixed_chess_policy must be None or 'v2'.")
+        self.fixed_chess_policy = fixed_chess_policy
         if opponent not in {"minimax", "stockfish"}:
             raise ValueError("opponent must be 'minimax' or 'stockfish'.")
         if opponent == "stockfish" and not 0 < stockfish_time <= 10:
@@ -148,6 +154,7 @@ class ChessSandbox(Environment):
             raise RuntimeError(f"Patch did not apply:\n{applied['stderr'].strip()}")
 
     def _start_server(self, timeout: float) -> None:
+        server_script = "fixed_chess_server.py" if self.fixed_chess_policy else "chess_server.py"
         opponent_args = []
         if self.opponent == "stockfish":
             opponent_args = ["--opponent", "stockfish", "--stockfish-time", str(self.stockfish_time)]
@@ -156,7 +163,7 @@ class ChessSandbox(Environment):
             if self.stockfish_elo is not None:
                 opponent_args += ["--stockfish-elo", str(self.stockfish_elo)]
         command = (
-            "nohup python /opt/assignment/chess_server.py "
+            f"nohup python /opt/assignment/{server_script} "
             f"--host 0.0.0.0 --port {self.port} "
             f"{shlex.join(opponent_args)} "
             f"> {SERVER_LOG} 2>&1 < /dev/null & echo $!"

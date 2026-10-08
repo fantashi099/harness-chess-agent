@@ -10,3 +10,6 @@ data/*
 !data/README.md
 !data/.gitkeep
 .env
+
+# Run artifacts stay local.
+/artifacts/

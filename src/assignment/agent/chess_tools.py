@@ -17,6 +17,20 @@ import httpx
 CHESS_PORT = 8000
 
 
+def _select_and_play(client: httpx.Client, arguments: str, expected_position_id: str) -> str:
+    """Only the trusted server policy selects a move in fixed mode."""
+    try:
+        args = json.loads(arguments)
+        if not isinstance(args, dict) or args:
+            raise ValueError("select_and_play takes an empty JSON object; no move/code overrides.")
+        return json.dumps(_request_state(
+            client, "POST", "/api/select-and-play",
+            json={"expected_position_id": expected_position_id},
+        ))
+    except Exception as exc:
+        return f"<chess_error>{exc}</chess_error>"
+
+
 def _request_state(
     client: httpx.Client, method: str, endpoint: str, **kwargs: Any
 ) -> dict[str, Any]:
