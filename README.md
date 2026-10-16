@@ -32,7 +32,28 @@ make run-chess-agent
 See [ASSIGNMENT.md](ASSIGNMENT.md) for context compaction, SWE-bench,
 programmatic chess tools and observation experiments.
 
-## Fixed chess policy
+## Final chess harness: original r13
+
+The final v6 harness preserves original r13 search, evaluator, budget verification
+and LLM decision authority: `select-move-v6-llm-harness-13`,
+`iterative-alpha-beta-q6-2`, `development-king-safety-v2`, 6,000 nodes and depth 4.
+New runs use `deepseek/deepseek-v4-flash-0731`, configured through `OPENAI_MODEL`
+in `.env`. The reported original-r13 batch used GLM 5.3; those historical results
+remain attributed to that model and do not establish DeepSeek performance.
+
+```bash
+uv run assignment-play-chess \
+  --fixed-chess-policy v6 --max-nodes 6000 --search-depth 4 \
+  --opponent stockfish --stockfish-elo 2000 \
+  --patch artifacts/fix.patch \
+  --trajectory artifacts/assignment2/r13-deepseek/trajectory.json \
+  --result artifacts/assignment2/r13-deepseek/result.json
+```
+
+These runs consume Modal and model credits. See the
+[experiment guide](experiments/chess/README.md) for complete batches and offline replay.
+
+## Fixed chess policy baseline
 
 The optional v2 policy runs a deterministic two-ply helper inside the sandbox.
 The model requests turns through `select_and_play`; the helper selects and
@@ -40,7 +61,7 @@ commits each move.
 
 ```bash
 uv run assignment-play-chess \
-  --model glm-5.2 --fixed-chess-policy v2 \
+  --model deepseek/deepseek-v4-flash-0731 --fixed-chess-policy v2 \
   --skills-path experiments/chess/skills \
   --patch artifacts/fix.patch \
   --trajectory artifacts/assignment2/my-fixed-run/trajectory.json \
@@ -102,7 +123,7 @@ uv run python scripts/check_stockfish_opponent.py --stockfish-path /usr/games/st
 
 ```bash
 make test
-uv run pytest -q experiments/chess/test_fixed_policy.py
+uv run python -m pytest -q tests experiments/chess
 uv run python scripts/check_fixed_chess_policy.py
 uv run python scripts/replay_fixed_chess_game.py \
   --result artifacts/assignment2/my-fixed-run/result.json

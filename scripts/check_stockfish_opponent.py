@@ -34,7 +34,7 @@ def check():
     with patch("chess.engine.SimpleEngine.popen_uci", return_value=engine):
         with TestClient(create_fixed_app(opponent="stockfish", stockfish_elo=1500)) as client:
             engine.configure.assert_called_once_with(
-                {"Threads": 1, "Hash": 64, "UCI_LimitStrength": True, "UCI_Elo": 1500})
+                {"Threads": 1, "Hash": 64, "UCI_LimitStrength": True, "Skill Level": 20, "UCI_Elo": 1500})
             assert client.post("/api/move", json={"move": "e2e5"}).status_code == 400
             initial = client.get("/api/state").json()
             request = {"expected_position_id": position_id(initial)}

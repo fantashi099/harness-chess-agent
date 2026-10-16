@@ -1,57 +1,40 @@
-# Fixed chess policy v2
+# Chess policy experiments
 
-This extension preserves the v2 skill's two-ply search, evaluation and tie-breaks.
-A fixed Python helper runs inside the sandbox; the model requests each turn.
-See the main [README](../../README.md) for setup, opponent options and run commands.
+The final implementation uses original v6-r13: policy
+`select-move-v6-llm-harness-13`, search `iterative-alpha-beta-q6-2` and evaluator
+`development-king-safety-v2`. The default budget is 6,000 nodes per turn at depth 4.
+The LLM chooses the final move; search supplies bounded evidence.
 
-## Offline checks
+## Run original r13
 
-```bash
-uv run pytest -q experiments/chess/test_fixed_policy.py tests
-uv run python scripts/check_fixed_chess_policy.py
-```
-
-The four regression positions must select `Re4`, `Qe5+`, `Qd4+` and `Rb1+`
-over the recorded inferior moves under the same two-ply evaluation.
-The checker writes `artifacts/assignment2/fixed-policy-regressions.json`.
-
-## Replay a saved run
+Configure `OPENAI_MODEL=deepseek/deepseek-v4-flash-0731` in your local `.env`.
 
 ```bash
-uv run python scripts/replay_fixed_chess_game.py \
-  --result artifacts/assignment2/my-fixed-run/result.json
+uv run python -m experiments.chess.evaluate_search_policy \
+  --policy v6 --output artifacts/assignment2/r13-deepseek \
+  --games 5 --max-nodes 6000 --depth 4 --stockfish-elo 2000
 ```
 
-The validator uses a temporary chess app checkout with the Part 1 patch applied.
-It checks legal history, every White move against the helper, the final FEN and
-outcome. Minimax replies are reproduced at depth 2; Stockfish replies are checked
-for legality. Replay uses no model calls or Modal sandboxes and requires the
-helper and patch versions recorded in the manifest.
+This starts billable Modal sandboxes and real model calls. Use a fresh output
+directory. Every requested game is recorded, including failures and incomplete games.
+The original report batch used GLM 5.3; its results do not measure DeepSeek performance.
+Archived results and source snapshots retain their original model metadata.
 
-## Execution guarantees
+## Offline tests and replay
 
-- The model receives `select_and_play` and, when skills are loaded, `invoke_skill`.
-- The harness supplies the observed position identity; the model cannot choose a
-  FEN, override the move or call raw move, Python or simulation tools.
-- The server holds the game lock throughout search and commit, including against
-  browser moves and resets.
-- Identity includes the game ID, FEN and full history. Stale requests are rejected;
-  duplicate requests return the recorded decision without committing again.
-- Search calls `simulate_position` directly inside the sandbox. `simulator_calls`
-  counts simulations rather than HTTP requests.
-- Observations contain summaries; full ties and top candidates are saved separately.
+```bash
+uv run python -m pytest -q tests experiments/chess
+uv run python scripts/check_stockfish_opponent.py
+uv run python scripts/check_fixed_chess_policy.py --output /tmp/fixed-policy-regressions.json
+uv run python scripts/replay_v3_chess_game.py \
+  --result artifacts/assignment2/RUN/game_1/result.json --report /tmp/replay-report.json
+```
 
-Each run saves `trajectory.json`, `result.json`, `decisions.jsonl`, `game.pgn`
-and `manifest.json`. Results and decisions are saved in `finally`, including on
-errors or step limits. Replay creates `replay-report.json`.
+Replay verifies source hashes, legal history, search evidence and explicit LLM
+commits without calling a model. Stockfish replies are checked for legality and
+recorded configuration; timed replies are not reproduced exactly.
 
-## Limitations and legacy mode
-
-The helper does not implement deeper search, quiescence or full-history
-repetition within search branches. Recent-move penalties only break ties.
-Fixed execution does not guarantee a win or establish a general win rate.
-
-The earlier model-written Python skill remains in
-`legacy-skills/select-move-v2/SKILL.md`. Use
-`--programmatic-tools --skills-path experiments/chess/legacy-skills` to run it.
-The original assignment mode and skills under `tasks/` retain their interfaces.
+The v2 baseline and legacy skill remain available. v3/v4 modules are retained for
+existing CLI and replay dependencies. Later revisions, recovery/order/cache patches,
+endgame skills and development notes are kept separately from this active codebase.
+See the main [README](../../README.md) for setup, recording and the original assignment.

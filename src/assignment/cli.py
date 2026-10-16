@@ -12,7 +12,7 @@ from assignment.agent import (
     CodeAgent,
 )
 from assignment.chess_sandbox import ChessSandbox
-from assignment.chess_artifacts import save_fixed_run
+from assignment.chess_artifacts import record_saved_game, save_fixed_run
 from assignment.chess_server import add_opponent_arguments, opponent_kwargs
 from assignment.task import Task
 from assignment.env import Environment
@@ -203,9 +203,14 @@ def run_chess_agent() -> None:
     chess_modes = parser.add_mutually_exclusive_group()
     chess_modes.add_argument("--programmatic-tools", action="store_true")
     chess_modes.add_argument(
-        "--fixed-chess-policy", choices=["v2"],
-        help="execute the fixed v2 policy in the sandbox; no raw move/code tools",
+        "--fixed-chess-policy", choices=["v2", "v3", "v4", "v5", "v6"],
+        help="execute v2/v3/v4/v5 policy or v6 LLM decision harness; no raw move/code tools",
     )
+    parser.add_argument("--planner", choices=["rules", "llm"], default="rules", help="v4 analysis planner")
+    parser.add_argument("--planner-model", help="v4 planner model; defaults to the acting model")
+    parser.add_argument("--memory-path", type=Path, help="frozen memory JSON required by v3/v4")
+    parser.add_argument("--max-nodes", type=int, default=6000, help="v3/v4/v5 total visited-position cap per turn")
+    parser.add_argument("--search-depth",type=int,default=4,help="v5 maximum iterative search depth")
     parser.add_argument("--omit-legal-moves", action="store_true")
     add_opponent_arguments(parser)
     parser.add_argument("--sandbox-timeout", type=int, default=1800)
@@ -231,6 +236,7 @@ def run_chess_agent() -> None:
         patch=patch,
         deployment_timeout=args.sandbox_timeout,
         fixed_chess_policy=args.fixed_chess_policy,
+        memory_path=args.memory_path, max_nodes=args.max_nodes, planner=args.planner,search_depth=args.search_depth,
         **opponent_kwargs(args),
     ) as sandbox:
         print(f"Chess server: {sandbox.server_url}", flush=True)
@@ -247,6 +253,7 @@ def run_chess_agent() -> None:
             programmatic_tools=args.programmatic_tools,
             include_legal_moves=not args.omit_legal_moves,
             fixed_chess_policy=args.fixed_chess_policy,
+            planner=args.planner, planner_model=args.planner_model,
         )
         if args.fixed_chess_policy:
             stop_reason = "incomplete"
@@ -259,10 +266,12 @@ def run_chess_agent() -> None:
             finally:
                 save_fixed_run(agent, args.result, patch, stop_reason)
         else:
-            agent.run()
+            try:
+                agent.run()
+            finally:
+                args.result.parent.mkdir(parents=True, exist_ok=True)
+                args.result.write_text(json.dumps(agent.last_state, indent=2))
+                record_saved_game(args.result)
 
-    if not args.fixed_chess_policy:
-        args.result.parent.mkdir(parents=True, exist_ok=True)
-        args.result.write_text(json.dumps(agent.last_state, indent=2))
     print(f"Result: {args.result}")
     print(f"Trajectory: {trajectory}")

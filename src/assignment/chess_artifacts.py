@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import chess
@@ -19,6 +21,49 @@ def _revision(directory: Path) -> str | None:
         capture_output=True, text=True,
     )
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def search_sources(repo):
+    from assignment.chess_sandbox import SANDBOX_FILES
+    return (*SANDBOX_FILES,*(repo/p for p in ("src/assignment/agent/chess_policy_search.py",
+        "src/assignment/agent/chess_agent.py","src/assignment/chess_sandbox.py","src/assignment/chess_artifacts.py",
+        "src/assignment/cli.py","scripts/replay_v3_chess_game.py","experiments/chess/evaluate_search_policy.py")))
+
+
+def harness_sources(repo):
+    return (*search_sources(repo), *(repo/p for p in ("src/assignment/agent/chess_policy_harness.py",
+        "src/assignment/agent/chess_harness.py", "src/assignment/agent/base.py", "src/assignment/agent/chess_tools.py",
+        "scripts/record_chess_game.py")))
+
+
+def harness_metrics(decisions, records):
+    return {
+        "verification_analyses": sum(d["verification_count"] for d in decisions),
+        "comparison_turns": sum(d["comparison_count"] > 0 for d in decisions),
+        "replanned_turns": sum(d["replanned"] for d in decisions),
+        "repair_turns": len({r["position_id"] for r in records if r["status"] == "rejected"}),
+    }
+
+
+def record_saved_game(result_path: Path) -> None:
+    """Render saved history without letting a video failure hide the game result."""
+    result_path = result_path.resolve()
+    output = result_path.parent / "game_output.mp4"
+    repo = Path(__file__).resolve().parents[2]
+    try:
+        with tempfile.TemporaryDirectory(dir=result_path.parent, prefix=".game-record-") as directory:
+            temporary_output = Path(directory) / output.name
+            subprocess.run(
+                ["uv", "run", "python", str(repo / "scripts/record_chess_game.py"),
+                 "--result", str(result_path), "--out", str(temporary_output)],
+                cwd=repo, check=True, capture_output=True, text=True,
+            )
+            temporary_output.replace(output)
+        print(f"Recording: {output}", flush=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = exc.stderr if isinstance(exc, subprocess.CalledProcessError) else str(exc)
+        print(f"Warning: could not record {result_path}; saved result retained.\n{detail}",
+              file=sys.stderr, flush=True)
 
 
 def save_fixed_run(agent, result_path: Path, patch_path: Path, stop_reason: str) -> None:
@@ -40,19 +85,57 @@ def save_fixed_run(agent, result_path: Path, patch_path: Path, stop_reason: str)
     except Exception as exc:
         artifact_errors.append(f"Decision recovery failed: {exc}")
     state = agent.last_state
+    if getattr(agent, "fixed_chess_policy", "v2") == "v4":
+        for decision in agent.chess_decisions:
+            decision["planner_records"] = [r for r in agent.planner_records if r["position_id"] == decision["position_id"]]
+    version = POLICY_VERSION
+    v3_config = None
+    search_config=None
+    is_harness = getattr(agent, "fixed_chess_policy", "v2") == "v6"
+    if getattr(agent,"fixed_chess_policy","v2") in {"v5", "v6"}:
+        if is_harness:
+            from assignment.agent.chess_policy_harness import POLICY_VERSION as version
+        else:
+            from assignment.agent.chess_policy_search import POLICY_VERSION as version
+        try:
+            response=agent.chess_client.get("/api/policy-config")
+            response.raise_for_status()
+            search_config=response.json()
+        except Exception as exc:
+            artifact_errors.append(f"v5 configuration recovery failed: {exc}")
+    if is_harness:
+        for decision in agent.chess_decisions:
+            decision["harness_records"] = [r for r in agent.planner_records if r["position_id"] == decision["position_id"]]
+    if getattr(agent, "fixed_chess_policy", "v2") in {"v3", "v4"}:
+        if agent.fixed_chess_policy == "v4":
+            from assignment.agent.chess_policy_planned import POLICY_VERSION as version
+        else:
+            from assignment.agent.chess_policy_v3 import POLICY_VERSION as version
+        try:
+            response = agent.chess_client.get("/api/policy-config")
+            response.raise_for_status()
+            v3_config = response.json()
+            if hashlib.sha256(v3_config["memory_text"].encode()).hexdigest() != v3_config["memory_sha256"]:
+                raise ValueError("Memory hash mismatch")
+        except Exception as exc:
+            artifact_errors.append(f"v3 configuration recovery failed: {exc}")
     opponent = state.get("opponent", {"mode": "minimax", "depth": 2})
     # Incomplete is explicit even when a stale last_state looked terminal.
     completed = bool(state.get("game_over")) and not artifact_errors
     result = dict(state, stop_reason=stop_reason, completed=completed,
-                  policy_version=POLICY_VERSION, artifact_errors=artifact_errors)
+                  policy_version=version, artifact_errors=artifact_errors)
     result_path.parent.mkdir(parents=True, exist_ok=True)
     result_path.write_text(json.dumps(result, indent=2) + "\n")
     (result_path.parent / "decisions.jsonl").write_text(
         "".join(json.dumps(d) + "\n" for d in agent.chess_decisions)
     )
+    if getattr(agent, "fixed_chess_policy", "v2") == "v4":
+        (result_path.parent / "planner-trace.jsonl").write_text("".join(json.dumps(r) + "\n" for r in agent.planner_records))
+    if is_harness:
+        (result_path.parent / "harness-trace.jsonl").write_text("".join(json.dumps(r) + "\n" for r in agent.planner_records))
     board = chess.Board()
     game = chess.pgn.Game()
-    game.headers["White"] = POLICY_VERSION
+    game.headers["White"] = version
     game.headers["Black"] = (opponent.get("name") or "Stockfish") if opponent["mode"] == "stockfish" else "Provided minimax depth 2"
     node = game
     try:
@@ -82,7 +165,7 @@ def save_fixed_run(agent, result_path: Path, patch_path: Path, stop_reason: str)
     policy_path = Path(__file__).parent / "agent" / "chess_policy.py"
     prompt_path = Path(__file__).with_name("prompts.py")
     manifest = {
-        "policy_version": POLICY_VERSION, "requested_model": agent.model,
+        "policy_version": version, "requested_model": agent.model,
         "reported_models": sorted({r.get("model", "") for r in agent.api_responses}),
         "repo_revision": _revision(repo),
         "chess_app_revision": _revision(repo / "chess_app"),
@@ -100,4 +183,58 @@ def save_fixed_run(agent, result_path: Path, patch_path: Path, stop_reason: str)
         "simulator_backend": "in_process_simulate_position",
         "note": "Repository files may have uncommitted changes; source hashes describe this run.",
     }
+    if getattr(agent, "fixed_chess_policy", "v2") in {"v3", "v4"}:
+        from assignment.chess_sandbox import SANDBOX_FILES
+        sources = (*SANDBOX_FILES, repo / "src/assignment/agent/chess_policy_v3.py",
+                   repo / "experiments/chess/verify_exchange.py")
+        if agent.fixed_chess_policy == "v4":
+            sources += tuple(repo / p for p in ("src/assignment/agent/chess_policy_planned.py", "src/assignment/agent/chess_planner.py",
+                "src/assignment/agent/chess_agent.py", "src/assignment/agent/base.py", "src/assignment/agent/tools.py",
+                "src/assignment/cli.py", "src/assignment/chess_artifacts.py"))
+        manifest.update(source_sha256={str(p.relative_to(repo)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
+                        simulator_backend="immutable_board_stack", planner="bounded_rule_planner", variant="R",
+                        search_scope="Complete bounded shallow search; approximate top-five refinement",
+                        memory_frozen=True, learning_during_evaluation=False)
+        if agent.fixed_chess_policy == "v4":
+            from assignment.agent.chess_planner import PLANNER_PROMPT
+            records = agent.planner_records
+            manifest.update(planner=agent.planner, planner_model=agent.planner_model, max_planner_calls_per_turn=2,
+                planner_prompt_sha256=hashlib.sha256(PLANNER_PROMPT.encode()).hexdigest(),
+                planner_response_count=sum(r["response"] is not None for r in records),
+                planner_reported_models=sorted({r["response"]["model"] for r in records if r["response"] is not None}),
+                planner_seconds=sum(r["seconds"] for r in records),
+                planner_token_usage={key: sum(((r.get("response") or {}).get("usage") or {}).get(key, 0) for r in records)
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")})
+        if v3_config is not None:
+            (result_path.parent / "memory-snapshot.json").write_text(v3_config["memory_text"])
+            manifest.update(memory_sha256=v3_config["memory_sha256"], memory_version=json.loads(v3_config["memory_text"])["version"],
+                            max_nodes=v3_config["max_nodes"])
+    if getattr(agent,"fixed_chess_policy","v2") in {"v5", "v6"}:
+        sources=harness_sources(repo) if is_harness else search_sources(repo)
+        manifest.update(source_sha256={str(p.relative_to(repo)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
+            simulator_backend="immutable_board_stack",planner="iterative_alpha_beta",memory_used=False,
+            learning_during_evaluation=False,action_driver=getattr(agent,"action_driver","react_llm"))
+        if search_config:
+            manifest.update(max_nodes=search_config["max_nodes"],search_config=search_config["search_config"],
+                search_depth=search_config["search_config"]["max_depth"],search_version=search_config["search_version"],
+                evaluation=search_config["evaluation"])
+        if is_harness:
+            from assignment.agent.chess_harness import HARNESS_PROMPT
+            records = agent.planner_records
+            manifest.update(planner="llm_harness", decision_authority="llm", llm_model=agent.planner_model,
+                max_llm_calls_per_turn=search_config["max_llm_calls"] if search_config else None,
+                max_analyses_per_turn=search_config["max_analyses"] if search_config else None,
+                verification_reserve_nodes=search_config["verification_reserve"] if search_config else None,
+                comparison_reserve_nodes=search_config["comparison_reserve"] if search_config else None,
+                tactical_probe_max_nodes=search_config["tactical_probe_max_nodes"] if search_config else None,
+                score_drop_threshold=search_config["score_drop_threshold"] if search_config else None,
+                harness_prompt_sha256=hashlib.sha256(HARNESS_PROMPT.encode()).hexdigest(),
+                llm_response_count=sum(r["response"] is not None for r in records),
+                llm_reported_models=sorted({r["response"]["model"] for r in records if r["response"] is not None}),
+                llm_seconds=sum(r["seconds"] for r in records),
+                llm_token_usage={key: sum(((r.get("response") or {}).get("usage") or {}).get(key, 0) for r in records)
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")},
+                changed_first_suggestion=sum(d["llm_changed_first_suggestion"] for d in agent.chess_decisions),
+                **harness_metrics(agent.chess_decisions, records))
     (result_path.parent / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    record_saved_game(result_path)

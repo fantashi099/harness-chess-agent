@@ -34,6 +34,7 @@ from assignment.prompts import (
     CHESS_AGENT_SYSTEM_PROMPT_TEMPLATE,
     PROGRAMMATIC_CHESS_PROMPT,
     FIXED_CHESS_PROMPT,
+    V3_CHESS_PROMPT,
 )
 from assignment.env import Environment
 
@@ -101,9 +102,11 @@ class ChessAgent(Agent):
         python_sandbox_port: int = CHESS_PORT,
         include_legal_moves: bool = True,
         fixed_chess_policy: str | None = None,
+        planner: str = "rules",
+        planner_model: str | None = None,
     ):
-        if fixed_chess_policy not in {None, "v2"}:
-            raise ValueError("fixed_chess_policy must be None or 'v2'.")
+        if fixed_chess_policy not in {None, "v2", "v3", "v4", "v5", "v6"}:
+            raise ValueError("Unsupported fixed chess policy")
         if fixed_chess_policy and programmatic_tools:
             raise ValueError("Fixed policy and arbitrary programmatic tools are separate modes.")
         super().__init__(
@@ -120,8 +123,24 @@ class ChessAgent(Agent):
 
         # TODO(Part 3): Register the play_move tool schema from tools.py.
         self.fixed_chess_policy = fixed_chess_policy
+        self.planner, self.planner_model = planner, planner_model or self.model
+        self.planner_records = []
+        if planner not in {"rules", "llm"}:
+            raise ValueError("Invalid planner")
         self.chess_decisions: list[dict[str, Any]] = []
         self.tools.append(SELECT_AND_PLAY_TOOL if fixed_chess_policy else PLAY_MOVE_TOOL)
+        if fixed_chess_policy in {"v3", "v4"}:
+            self.tools[-1] = dict(SELECT_AND_PLAY_TOOL, function=dict(
+                SELECT_AND_PLAY_TOOL["function"],
+                description=("Run the bounded v3 rule planner/executor" if fixed_chess_policy == "v3" else "Run the bounded v4 planner/executor") + " with frozen memory on the current snapshot "
+                            "and commit exactly one selected White move. Black replies automatically. "
+                            "Call once per turn until game_over; no move, profile or code arguments."))
+        if fixed_chess_policy=="v5":
+            self.tools[-1]=dict(SELECT_AND_PLAY_TOOL,function=dict(SELECT_AND_PLAY_TOOL["function"],
+                description="Run bounded iterative alpha-beta search and commit one White move. Black replies automatically. Call with {} once per turn until game_over."))
+        if fixed_chess_policy == "v6":
+            self.tools[-1] = dict(SELECT_AND_PLAY_TOOL, function=dict(SELECT_AND_PLAY_TOOL["function"],
+                description="Run the LLM planner/evaluator harness with bounded search tools; the inner LLM explicitly chooses one move. Call with {} once per White turn."))
         if fixed_chess_policy:
             self.max_completion_tokens = 512
         self.programmatic_tools = programmatic_tools
@@ -153,6 +172,19 @@ class ChessAgent(Agent):
             else CHESS_AGENT_NO_LEGAL_MOVES_PROMPT_TEMPLATE
         )
         self.system_prompt = FIXED_CHESS_PROMPT if fixed_chess_policy else prompt_template.render()
+        if fixed_chess_policy == "v3":
+            self.system_prompt = V3_CHESS_PROMPT
+        if fixed_chess_policy == "v4":
+            self.system_prompt = V3_CHESS_PROMPT.replace("server's v3 rule planner", "v4 planner/executor pipeline")
+        if fixed_chess_policy=="v5":
+            self.system_prompt=("Play White. Call select_and_play with {} once per turn until game_over. "
+                "The server performs bounded iterative alpha-beta search and commits one legal move. "
+                "It retains the last completed iteration at budget cutoff. Scores are finite-horizon estimates. "
+                "You cannot override the move, submit code, or execute a PV as multiple actions.")
+        if fixed_chess_policy == "v6":
+            self.system_prompt = ("Play White. Call select_and_play with {} once per turn until game_over. "
+                "The inner LLM harness plans analysis, evaluates feedback, revises if needed and chooses the move. "
+                "Code executes read-only bounded search and commits the explicit LLM choice.")
         if programmatic_tools:
             self.system_prompt += "\n\n" + PROGRAMMATIC_CHESS_PROMPT
         if self.skills:
@@ -165,7 +197,7 @@ class ChessAgent(Agent):
         if fixed_chess_policy:
             opening_instruction = (
                 "First invoke select-move-v2, then call select_and_play with {} each turn."
-                if self.skills else "Call select_and_play with {} each turn."
+                if self.skills and fixed_chess_policy == "v2" else "Call select_and_play with {} each turn."
             )
         elif programmatic_tools and self.skills:
             opening_instruction = (
@@ -220,6 +252,12 @@ class ChessAgent(Agent):
             if self.fixed_chess_policy else
             {"play_move": lambda args: _play_move(self.chess_client, args)}
         )
+        if self.fixed_chess_policy == "v4":
+            from assignment.agent.chess_planner import planned_select_and_play
+            handlers["select_and_play"] = lambda args: planned_select_and_play(self, args)
+        if self.fixed_chess_policy == "v6":
+            from assignment.agent.chess_harness import harness_select_and_play
+            handlers["select_and_play"] = lambda args: harness_select_and_play(self, args)
         if self.skills:
             handlers["invoke_skill"] = lambda args: _invoke_skill(self.skills, args)
         if self.programmatic_tools:
@@ -283,6 +321,20 @@ class ChessAgent(Agent):
                                 "simulator_calls", "reason", "engine_move",
                             )
                         }
+                        if self.fixed_chess_policy=="v5":
+                            summary.update(nodes_used=decision["nodes_used"],cutoff_reached=decision["cutoff_reached"],
+                                           alpha_beta_prunes=decision["alpha_beta_prunes"],evaluation=decision["evaluation"])
+                        elif self.fixed_chess_policy == "v6":
+                            summary.update(nodes_used=decision["nodes_used"], cutoff_reached=decision["cutoff_reached"],
+                                decision_authority="llm", analyses=len(decision["analysis_trace"]),
+                                llm_changed_first_suggestion=decision["llm_changed_first_suggestion"])
+                        elif self.fixed_chess_policy == "v4":
+                            summary.update(nodes_used=decision["nodes_used"], cutoff_reached=decision["cutoff_reached"],
+                                           planner=decision["planner"], verification_attempts=len(decision["execution_attempts"]))
+                        elif self.fixed_chess_policy == "v3":
+                            summary.update(nodes_used=decision["nodes_used"], cutoff_reached=decision["cutoff_reached"],
+                                           retrieved=[{"id": x["id"], "version": x["version"]} for x in decision["plan"]["retrieved"]],
+                                           replan=decision["plan"]["keep/revise"])
                         summary["primary_tie_count"] = len(decision["primary_ties"])
                     result = json.dumps({"chess_decision": summary,
                                          "replayed": payload.get("replayed", False)})

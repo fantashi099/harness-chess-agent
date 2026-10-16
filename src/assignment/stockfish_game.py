@@ -27,7 +27,8 @@ class StockfishGame(ChessGame):
     def start(self) -> None:
         try:
             self.engine = chess.engine.SimpleEngine.popen_uci(self.path, timeout=5)
-            options = {"Threads": 1, "Hash": 64}
+            options = {"Threads": 1, "Hash": 64, "UCI_LimitStrength": self.elo is not None,
+                       "Skill Level": 20}
             if self.elo is not None:
                 options.update(UCI_LimitStrength=True, UCI_Elo=self.elo)
             self.engine.configure(options)

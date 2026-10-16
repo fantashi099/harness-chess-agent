@@ -41,7 +41,7 @@ SANDBOX_FILES = (
     Path(__file__).with_name("stockfish_game.py"),
 )
 
-def _with_assignment_files(image):
+def _with_assignment_files(image, v3_memory=None, planned_policy=False, search_policy=False, harness_policy=False):
     """Copy the files the sandbox runs into /opt/assignment."""
 
     for source in SANDBOX_FILES:
@@ -50,6 +50,21 @@ def _with_assignment_files(image):
             f"/opt/assignment/{source.name}",
             copy=True,  # SWE-ReX adds its runtime build layer afterwards.
         )
+    if v3_memory is not None:
+        repo = Path(__file__).resolve().parents[2]
+        for source in (Path(__file__).parent / "agent/chess_policy_v3.py",
+                       repo / "experiments/chess/verify_exchange.py"):
+            image = image.add_local_file(str(source), f"/opt/assignment/{source.name}", copy=True)
+        image = image.add_local_file(str(v3_memory), "/opt/assignment/frozen-memory.json", copy=True)
+    if planned_policy:
+        source = Path(__file__).parent / "agent/chess_policy_planned.py"
+        image = image.add_local_file(str(source), f"/opt/assignment/{source.name}", copy=True)
+    if search_policy:
+        source=Path(__file__).parent/"agent/chess_policy_search.py"
+        image=image.add_local_file(str(source),f"/opt/assignment/{source.name}",copy=True)
+    if harness_policy:
+        source = Path(__file__).parent / "agent/chess_policy_harness.py"
+        image = image.add_local_file(str(source), f"/opt/assignment/{source.name}", copy=True)
     return image
 
 class ChessSandbox(Environment):
@@ -72,6 +87,10 @@ class ChessSandbox(Environment):
         deployment_timeout: float = 1800,
         server_timeout: float = 30,
         fixed_chess_policy: str | None = None,
+        memory_path: str | Path | None = None,
+        max_nodes: int = 6000,
+        planner: str = "rules",
+        search_depth: int = 4,
         opponent: str = "minimax",
         stockfish_path: str | None = None,
         stockfish_time: float = 0.2,
@@ -96,9 +115,21 @@ class ChessSandbox(Environment):
             stockfish_time: Seconds per Black move (maximum 10).
             stockfish_elo: Optional strength limit supported by the engine.
         """
-        if fixed_chess_policy not in {None, "v2"}:
-            raise ValueError("fixed_chess_policy must be None or 'v2'.")
+        if fixed_chess_policy not in {None, "v2", "v3", "v4", "v5", "v6"}:
+            raise ValueError("Unsupported fixed chess policy")
         self.fixed_chess_policy = fixed_chess_policy
+        self.memory_path = Path(memory_path).resolve() if memory_path else None
+        self.max_nodes = max_nodes
+        self.planner = planner
+        self.search_depth=search_depth
+        if type(search_depth) is not int or not 1<=search_depth<=12:
+            raise ValueError("Search depth must be 1..12")
+        if planner not in {"rules", "llm"}:
+            raise ValueError("Invalid planner")
+        if fixed_chess_policy in {"v3", "v4"} and (self.memory_path is None or not self.memory_path.is_file()):
+            raise ValueError("v3 requires a frozen memory file")
+        if type(max_nodes) is not int or max_nodes < 1:
+            raise ValueError("max_nodes must be positive")
         if opponent not in {"minimax", "stockfish"}:
             raise ValueError("opponent must be 'minimax' or 'stockfish'.")
         if opponent == "stockfish" and not 0 < stockfish_time <= 10:
@@ -118,7 +149,10 @@ class ChessSandbox(Environment):
         if opponent == "stockfish":
             image = image.apt_install("stockfish")
         super().__init__(
-            image=_with_assignment_files(image),
+            image=(_with_assignment_files(image,search_policy=True,harness_policy=fixed_chess_policy=="v6") if fixed_chess_policy in {"v5", "v6"}
+                   else _with_assignment_files(image, self.memory_path, True) if fixed_chess_policy == "v4"
+                   else _with_assignment_files(image, self.memory_path) if fixed_chess_policy == "v3"
+                   else _with_assignment_files(image)),
             startup_timeout=startup_timeout,
             runtime_timeout=runtime_timeout,
             deployment_timeout=deployment_timeout,
@@ -162,6 +196,11 @@ class ChessSandbox(Environment):
                 opponent_args += ["--stockfish-path", self.stockfish_path]
             if self.stockfish_elo is not None:
                 opponent_args += ["--stockfish-elo", str(self.stockfish_elo)]
+        if self.fixed_chess_policy in {"v3", "v4"}:
+            opponent_args += ["--policy", self.fixed_chess_policy, "--planner", self.planner, "--memory-path", "/opt/assignment/frozen-memory.json",
+                              "--max-nodes", str(self.max_nodes)]
+        if self.fixed_chess_policy in {"v5", "v6"}:
+            opponent_args += ["--policy",self.fixed_chess_policy,"--search-depth",str(self.search_depth),"--max-nodes",str(self.max_nodes)]
         command = (
             f"nohup python /opt/assignment/{server_script} "
             f"--host 0.0.0.0 --port {self.port} "

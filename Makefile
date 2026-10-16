@@ -17,7 +17,7 @@ SWEBENCH_PATCH ?= artifacts/$(INSTANCE).patch
 SWEBENCH_TRAJECTORY ?= artifacts/$(INSTANCE)-trajectory.json
 TRAJECTORY ?= artifacts/part3-trajectory.json
 RESULT ?= artifacts/game-result.json
-MODEL ?= glm-5.2
+MODEL ?= deepseek/deepseek-v4-flash-0731
 DEEPSEEK_MODEL ?= deepseek/deepseek-v4-flash-0731
 GPT_OSS_MODEL ?= openai/gpt-oss-120b
 MODEL_TAG ?= $(subst /,-,$(MODEL))
@@ -44,7 +44,7 @@ verify-sources:
 # Fast and free. These tests fail in the starter until the corresponding TODOs
 # are implemented.
 test:
-	uv run pytest
+	uv run python -m pytest tests experiments/chess
 
 # Slow and billable: launches real Modal sandboxes.
 test-modal:
