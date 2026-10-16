@@ -160,7 +160,7 @@ def harness_select_and_play(agent, arguments):
             role = "planner" if not feedback["analyses"] else "evaluator"
             messages = [{"role": "system", "content": HARNESS_PROMPT},
                         {"role": "user", "content": json.dumps({"context": context, "feedback": feedback})}]
-            record = {"position_id": root_id, "role": role, "requested_model": agent.planner_model,
+            record = {"position_id": root_id, "role": role, "requested_model": agent.model,
                       "request": messages, "max_completion_tokens": completion_limit,
                       "response": None, "status": "rejected"}
             agent.planner_records.append(record)
@@ -168,7 +168,7 @@ def harness_select_and_play(agent, arguments):
             action = None
             try:
                 response = agent.client.with_options(timeout=90, max_retries=0).chat.completions.create(
-                    model=agent.planner_model, messages=messages, reasoning_effort="low",
+                    model=agent.model, messages=messages, reasoning_effort="low",
                     max_completion_tokens=completion_limit, response_format={"type": "json_object"})
                 record["response"] = response.model_dump(mode="json")
                 if response.choices[0].finish_reason != "stop":

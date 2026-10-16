@@ -1,4 +1,4 @@
-"""Validate v3/v4/v5/v6 sources, exact White decisions and game consistency.
+"""Validate search and harness sources, exact White decisions and game consistency.
 
 Timed Stockfish is checked for legal moves/configuration, never exact replies.
 """
@@ -15,7 +15,6 @@ import chess
 import chess.pgn
 
 from assignment.agent.chess_policy import position_id
-from assignment.agent.chess_policy_v3 import POLICY_VERSION, identity, select_move
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -24,18 +23,27 @@ def verify(result_path, patch):
     state = json.loads(result_path.read_text())
     manifest = json.loads((result_path.parent / "manifest.json").read_text())
     decisions = [json.loads(line) for line in (result_path.parent / "decisions.jsonl").read_text().splitlines() if line]
-    from assignment.agent import chess_policy_planned as planned
-    from assignment.agent import chess_policy_search as search_policy
-    from assignment.agent import chess_policy_harness as harness
-    is_planned = state["policy_version"] == planned.POLICY_VERSION
+    # Isolate replay globals so archived implementations cannot alter live search.
+    spec = importlib.util.spec_from_file_location("assignment.agent._replay_search", REPO / "src/assignment/agent/chess_policy_search.py")
+    search_policy = importlib.util.module_from_spec(spec)
+    exec(compile(Path(spec.origin).read_bytes(), spec.origin, "exec"), search_policy.__dict__)
+    spec = importlib.util.spec_from_file_location("assignment.agent._replay_harness", REPO / "src/assignment/agent/chess_policy_harness.py")
+    harness = importlib.util.module_from_spec(spec)
+    exec(compile(Path(spec.origin).read_bytes(), spec.origin, "exec"), harness.__dict__)
     is_search=state["policy_version"]==search_policy.POLICY_VERSION
     is_harness=state["policy_version"] in {harness.POLICY_VERSION, "select-move-v6-llm-harness-1",
                                          "select-move-v6-llm-harness-2", "select-move-v6-llm-harness-3",
                                          "select-move-v6-llm-harness-4", "select-move-v6-llm-harness-5",
                                          "select-move-v6-llm-harness-6", "select-move-v6-llm-harness-7",
                                          "select-move-v6-llm-harness-8", "select-move-v6-llm-harness-9", "select-move-v6-llm-harness-10", "select-move-v6-llm-harness-11", "select-move-v6-llm-harness-12"}
-    if not (is_harness or state["policy_version"] in {POLICY_VERSION, planned.POLICY_VERSION,search_policy.POLICY_VERSION}) or manifest["policy_version"] != state["policy_version"]:
+    if not (is_harness or is_search) or manifest["policy_version"] != state["policy_version"]:
         raise ValueError("Unsupported chess policy version")
+    if "policy" in manifest:
+        if manifest["policy"] != ("harness" if is_harness else "search"):
+            raise ValueError("Policy label and implementation differ")
+        if manifest["evaluation"] != manifest["search_config"].get("evaluation"):
+            raise ValueError("Recorded evaluator and search configuration differ")
+    archived_features = None
     for relative, digest in manifest["source_sha256"].items():
         source_path = REPO / relative
         if not source_path.is_file() or hashlib.sha256(source_path.read_bytes()).hexdigest() != digest:
@@ -45,14 +53,18 @@ def verify(result_path, patch):
             if (is_search or is_harness) and relative=="src/assignment/agent/chess_policy_search.py":
                 spec=importlib.util.spec_from_file_location("assignment.agent._recorded_search",archive)
                 search_policy=importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(search_policy)
+                exec(compile(archive.read_bytes(), str(archive), "exec"), search_policy.__dict__)
             if is_harness and relative=="src/assignment/agent/chess_policy_harness.py":
                 spec=importlib.util.spec_from_file_location("assignment.agent._recorded_harness",archive)
                 harness=importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(harness)
-            if relative in {"src/assignment/agent/chess_policy.py", "src/assignment/agent/chess_policy_v3.py",
-                            "src/assignment/agent/chess_policy_planned.py", "experiments/chess/verify_exchange.py"}:
-                raise ValueError(f"Executor changed; recompute with archived version: {relative}")
+                exec(compile(archive.read_bytes(), str(archive), "exec"), harness.__dict__)
+            if relative == "src/assignment/agent/chess_policy.py":
+                spec = importlib.util.spec_from_file_location("assignment.agent._recorded_features", archive)
+                archived_features = importlib.util.module_from_spec(spec)
+                exec(compile(archive.read_bytes(), str(archive), "exec"), archived_features.__dict__)
+    if archived_features is not None:
+        for name in ("VALUES", "CENTERS", "secondary", "position_id", "INITIAL_FEN"):
+            setattr(search_policy, name, getattr(archived_features, name))
     if hashlib.sha256(patch.read_bytes()).hexdigest() != manifest["patch_sha256"]:
         raise ValueError("Patch changed since run")
     if is_harness:
@@ -77,24 +89,15 @@ def verify(result_path, patch):
                  for key in ("prompt_tokens", "completion_tokens", "total_tokens")}
         if manifest["llm_response_count"] != len(responses) or manifest["llm_token_usage"] != usage:
             raise ValueError("LLM response/token totals differ")
-    if is_search or is_harness:
-        if manifest["teacher_used"] or manifest["memory_used"] or manifest["learning_during_evaluation"]:
-            raise ValueError("Unexpected teacher/memory mutation")
-        catalog={}
-    else:
-        memory_bytes = (result_path.parent / "memory-snapshot.json").read_bytes()
-        if hashlib.sha256(memory_bytes).hexdigest() != manifest["memory_sha256"]:
-            raise ValueError("Memory snapshot/hash differ")
-        catalog = json.loads(memory_bytes)
-        if catalog["learning_during_evaluation"] is not False or manifest["learning_during_evaluation"] is not False:
-            raise ValueError("Memory was not frozen")
+    if manifest["teacher_used"] or manifest["memory_used"] or manifest["learning_during_evaluation"]:
+        raise ValueError("Unexpected teacher/memory mutation")
     opponent = manifest["opponent"]
     if opponent != state.get("opponent", {"mode": "minimax", "depth": 2}) or opponent["mode"] not in {"stockfish", "minimax"}:
         raise ValueError("Opponent configuration differs")
     if opponent["mode"] == "stockfish":
         if opponent["threads"] != 1 or opponent["hash_mib"] != 64 or not 0 < opponent["move_time"] <= 10 or not opponent["name"]:
             raise ValueError("Invalid recorded Stockfish configuration")
-    with tempfile.TemporaryDirectory(prefix="v3-replay-") as directory:
+    with tempfile.TemporaryDirectory(prefix="chess-replay-") as directory:
         clone = Path(directory) / "app"
         subprocess.run(["git", "clone", "--quiet", "--shared", str(REPO / "chess_app"), str(clone)], check=True, capture_output=True)
         subprocess.run(["git", "-C", str(clone), "apply", str(patch.resolve())], check=True, capture_output=True)
@@ -118,7 +121,7 @@ def verify(result_path, patch):
                     decision = decisions[index]
                     index += 1
                     root = {"fen": board.fen(), "history": history, "policy_game_id": state["policy_game_id"]}
-                    executor_id=(search_policy.identity(board,state["policy_game_id"]) if is_search or is_harness else identity(board,state["policy_game_id"]))
+                    executor_id=search_policy.identity(board,state["policy_game_id"])
                     if decision["position_id"] != position_id(root) or decision["executor_position_id"] != executor_id:
                         raise ValueError(f"Stale game/history/plan at ply {ply}")
                     if is_harness:
@@ -191,32 +194,11 @@ def verify(result_path, patch):
                         if "quiescence" in expected and decision["quiescence"]!=expected["quiescence"]:
                             raise ValueError(f"Quiescence trace mismatch at ply {ply}")
                         if decision["nodes_used"]>manifest["max_nodes"]:raise ValueError("Node cap exceeded")
-                    elif is_planned:
-                        session = planned.prepare(board, state["policy_game_id"], catalog, position_id(root), manifest["max_nodes"], previous)
-                        for recorded in decision["execution_attempts"]:
-                            recomputed = planned.execute_plan(board, state["policy_game_id"], session, recorded["plan"])
-                            if json.dumps(recorded, sort_keys=True) != json.dumps(recomputed, sort_keys=True):
-                                raise ValueError(f"Task/evidence recompute differs at ply {ply}")
-                        expected = planned.decision_from(session, manifest["planner"])
-                        if manifest["planner"] == "llm":
-                            accepted = [r["plan"] for r in decision["planner_records"] if r["status"] == "accepted"]
-                            if any(r["plan"] not in accepted for r in decision["execution_attempts"]):
-                                raise ValueError("Executed plan has no accepted LLM record")
-                    else:
-                        expected = select_move(board, state["policy_game_id"], catalog, manifest["max_nodes"], previous=previous)
                     for key in ("policy_version", "root_fen", "chosen_move", "primary_score", "pv", "completed_depth", "nodes_used", "cutoff_reached", "reason"):
                         if decision[key] != expected[key]:
-                            raise ValueError(f"v3 recompute mismatch for {key} at ply {ply}")
-                    for key in (() if is_planned or is_search or is_harness else ("profile", "workflow_id", "position_id", "keep/revise", "budget")):
-                        if decision["plan"][key] != expected["plan"][key]:
-                            raise ValueError(f"Planner mismatch for {key} at ply {ply}")
+                            raise ValueError(f"Decision recompute mismatch for {key} at ply {ply}")
                     if decision["chosen_move"] != row["uci"] or decision["committed_move"] != row["uci"]:
                         raise ValueError(f"Decision/commit mismatch at ply {ply}")
-                    if not is_search and not is_harness and decision["memory_sha256"] != manifest["memory_sha256"]:
-                        raise ValueError("Decision memory differs")
-                    previous = dict(decision.get("plan") or {}, pv=decision["pv"], cutoff_reached=decision["cutoff_reached"])
-                    if is_planned:
-                        previous["primary_score"] = decision["primary_score"]
                     if is_harness:
                         previous = dict(decision["llm_action"], pv=decision["pv"],
                             actual_black_reply=decision["engine_move"], cutoff_reached=decision["cutoff_reached"])
@@ -256,7 +238,7 @@ def verify(result_path, patch):
                     raise ValueError("Harness metrics differ")
             return {"validated": True, "policy_version": state["policy_version"], "plies": len(history),
                     "decision_count": index, "result": outcome.result() if outcome else "*", "completed": state["completed"],
-                    "all_white_moves_follow_policy": True, "memory_hash_verified": None if is_search or is_harness else True,
+                    "all_white_moves_follow_policy": True, "memory_hash_verified": None,
                     "all_commits_match_llm_response": True if is_harness else None,
                     "opponent_validation": "exact_replay" if opponent["mode"] == "minimax" else "legal_moves_and_recorded_config_only"}
         finally:

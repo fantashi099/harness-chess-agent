@@ -13,9 +13,9 @@ from assignment.agent.chess_policy_harness import (
     TACTICAL_PROBE_NODES, analyze, board_facts, checking_chain_refutation,
     decision_from, feedback, mate_safety, move_facts, prepare, validate_action,
 )
-from assignment.chess_artifacts import save_fixed_run
+from assignment.chess_artifacts import save_chess_run
 from experiments.chess.test_agent_harness import analysis, commit, fake_client
-from experiments.chess.test_fixed_policy import patched_app_source
+from experiments.chess.test_chess_transactions import patched_app_source
 from assignment.fixed_chess_server import create_app
 
 REPO = Path(__file__).resolve().parents[2]
@@ -147,9 +147,9 @@ def test_contract_grounding_commit_and_replay_provenance(monkeypatch, tmp_path, 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
     monkeypatch.setattr("assignment.chess_artifacts.record_saved_game", lambda _: None)
-    with TestClient(create_app(policy="v6", max_nodes=6000, search_depth=4)) as client:
+    with TestClient(create_app(policy="harness", max_nodes=6000, search_depth=4)) as client:
         agent = ChessAgent(object(), model="fake", http_client=client,
-                           auto_stop_environment=False, fixed_chess_policy="v6")
+                           auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([analysis(nodes=3000, depth=4),
             analysis(["d2d4"], nodes=2000, depth=4), commit("d2d4")], requests)
@@ -160,8 +160,8 @@ def test_contract_grounding_commit_and_replay_provenance(monkeypatch, tmp_path, 
         assert contexts[1]["feedback"]["action_contract"]["phase"] == "verify_or_replan"
         assert contexts[2]["feedback"]["analyses"][-1]["move_facts"]["piece"] == "P"
         assert agent.chess_decisions[0]["chosen_move"] == "d2d4"
-        save_fixed_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
-    from scripts.replay_v3_chess_game import verify
+        save_chess_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
+    from scripts.replay_chess_game import verify
     if archived_recorder:
         manifest_path = tmp_path / "manifest.json"
         manifest = json.loads(manifest_path.read_text())

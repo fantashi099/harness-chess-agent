@@ -10,9 +10,9 @@ from fastapi.testclient import TestClient
 from assignment.agent.chess_agent import ChessAgent
 from assignment.agent.chess_policy import position_id
 from assignment.agent.chess_policy_harness import MAX_LLM_CALLS, mate_safety, validate_action, prepare, analyze, decision_from
-from assignment.chess_artifacts import save_fixed_run
+from assignment.chess_artifacts import save_chess_run
 from assignment.fixed_chess_server import create_app
-from experiments.chess.test_fixed_policy import patched_app_source
+from experiments.chess.test_chess_transactions import patched_app_source
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -68,10 +68,10 @@ def test_r7_game2_full_legal_scope_is_broad_search(monkeypatch, patched_app_sour
         with pytest.raises(ValueError):
             analyze(board, "offline", session, analysis(bad, nodes=3000, depth=4))
         assert session["nodes_used"] == 0 and not session["analyses"]
-    with TestClient(create_app(policy="v6", max_nodes=6000, search_depth=4)) as client:
+    with TestClient(create_app(policy="harness", max_nodes=6000, search_depth=4)) as client:
         client.app.state.chess_game._board = board
         agent = ChessAgent(object(), model="fake", http_client=client, reset_game=False,
-                           auto_stop_environment=False, fixed_chess_policy="v6")
+                           auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([initial, analysis(["e1f1"], nodes=1000, depth=4),
                                     analysis(["e1d1"], nodes=1000, depth=4), commit("e1f1", ["e1f1", "d7d6", "d4d5"])], requests)
@@ -108,10 +108,10 @@ def test_r6_turn47_truncated_response_gets_more_output_budget(monkeypatch, patch
         move = next(iter(continuation_board.legal_moves))
         line.append(move.uci())
         continuation_board.push(move)
-    with TestClient(create_app(policy="v6", max_nodes=6000, search_depth=4)) as client:
+    with TestClient(create_app(policy="harness", max_nodes=6000, search_depth=4)) as client:
         client.app.state.chess_game._board = board
         agent = ChessAgent(object(), model="fake", http_client=client, reset_game=False,
-                           auto_stop_environment=False, fixed_chess_policy="v6")
+                           auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([
             {}, analysis(nodes=3000, depth=4), analysis(["c6g2"], nodes=2000, depth=4),
@@ -131,9 +131,9 @@ def test_r6_turn47_truncated_response_gets_more_output_budget(monkeypatch, patch
 def test_last_two_calls_allow_only_explicit_llm_commit(monkeypatch, patched_app_source):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
-    with TestClient(create_app(policy="v6", max_nodes=2000, search_depth=4)) as client:
+    with TestClient(create_app(policy="harness", max_nodes=2000, search_depth=4)) as client:
         agent = ChessAgent(object(), model="fake", http_client=client,
-                           auto_stop_environment=False, fixed_chess_policy="v6")
+                           auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([
             analysis(nodes=100), analysis(["d2d4"], nodes=1000, depth=2), {}, {}, {}, {},
@@ -153,9 +153,9 @@ def test_last_two_calls_allow_only_explicit_llm_commit(monkeypatch, patched_app_
 def test_repeated_truncation_caps_output_and_never_refills_calls(monkeypatch, patched_app_source):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
-    with TestClient(create_app(policy="v6")) as client:
+    with TestClient(create_app(policy="harness")) as client:
         agent = ChessAgent(object(), model="fake", http_client=client,
-                           auto_stop_environment=False, fixed_chess_policy="v6")
+                           auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([analysis()]*MAX_LLM_CALLS, requests, finish_reasons=["length"]*MAX_LLM_CALLS)
         call = [{"id": "act", "function": {"name": "select_and_play", "arguments": "{}"}}]
@@ -173,8 +173,8 @@ def test_llm_can_replan_and_choose_a_different_move(monkeypatch, tmp_path, patch
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
     monkeypatch.setattr("assignment.chess_artifacts.record_saved_game", lambda _: None)
-    with TestClient(create_app(policy="v6", max_nodes=2000, search_depth=4)) as client:
-        agent = ChessAgent(object(), model="fake", http_client=client, auto_stop_environment=False, fixed_chess_policy="v6")
+    with TestClient(create_app(policy="harness", max_nodes=2000, search_depth=4)) as client:
+        agent = ChessAgent(object(), model="fake", http_client=client, auto_stop_environment=False, chess_policy="harness")
         root = position_id(agent.last_state)
         original = client.app.state.chess_game._board.fen()
         requests = []
@@ -212,12 +212,12 @@ def test_llm_can_replan_and_choose_a_different_move(monkeypatch, tmp_path, patch
         assert json.loads(harness_select_and_play(agent, "{}"))["replayed"]
         assert len(agent.planner_records) == before
         agent.last_state = repeated["state"]
-        save_fixed_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
+        save_chess_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
         manifest = json.loads((tmp_path/"manifest.json").read_text())
         assert manifest["decision_authority"] == "llm" and manifest["llm_token_usage"]["total_tokens"] == 90
         assert manifest["replanned_turns"] == 0 and manifest["verification_analyses"] == 1
         assert manifest["comparison_turns"] == 0
-        from scripts.replay_v3_chess_game import verify
+        from scripts.replay_chess_game import verify
         assert verify(tmp_path/"result.json", REPO/"artifacts/fix.patch")["all_commits_match_llm_response"]
         saved = json.loads((tmp_path/"harness-trace.jsonl").read_text().splitlines()[-1])
         saved["response"]["choices"][0]["message"]["content"] = json.dumps(commit("e2e4"))
@@ -231,7 +231,7 @@ def test_llm_can_replan_and_choose_a_different_move(monkeypatch, tmp_path, patch
 
 
 def test_executor_is_readonly_and_has_no_automatic_fallback(patched_app_source):
-    with TestClient(create_app(policy="v6", max_nodes=2)) as client:
+    with TestClient(create_app(policy="harness", max_nodes=2)) as client:
         state = client.get("/api/state").json()
         request = {"expected_position_id": position_id(state)}
         assert client.post("/api/select-and-play", json=request).status_code == 400
@@ -251,8 +251,8 @@ def test_executor_is_readonly_and_has_no_automatic_fallback(patched_app_source):
 def test_invalid_llm_outputs_never_play_a_code_fallback(monkeypatch, patched_app_source):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
-    with TestClient(create_app(policy="v6")) as client:
-        agent = ChessAgent(object(), model="fake", http_client=client, auto_stop_environment=False, fixed_chess_policy="v6")
+    with TestClient(create_app(policy="harness")) as client:
+        agent = ChessAgent(object(), model="fake", http_client=client, auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([commit("a1a8")]*MAX_LLM_CALLS, requests)
         call = [{"id":"act", "function":{"name":"select_and_play", "arguments":"{}"}}]
@@ -267,10 +267,10 @@ def test_evidence2400_budget_dead_end_is_repaired_without_automatic_selection(mo
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
     fen = "r2qr3/p3bkpp/2pp1n2/4p3/4PBb1/5Q2/PPP2PPP/RN1R2K1 w - - 4 16"
-    with TestClient(create_app(policy="v6", max_nodes=6000, search_depth=4)) as client:
+    with TestClient(create_app(policy="harness", max_nodes=6000, search_depth=4)) as client:
         client.app.state.chess_game._board = chess.Board(fen)
         agent = ChessAgent(object(), model="fake", http_client=client, reset_game=False,
-                           auto_stop_environment=False, fixed_chess_policy="v6")
+                           auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([
             analysis(nodes=3000, depth=4), analysis(["f3e3"], nodes=2000, depth=4),
@@ -317,10 +317,10 @@ def test_r4_turn40_compares_shared_iterations_and_keeps_deeper_evidence(
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
     fen = "b2r4/5p2/5k2/p2P1p1B/2n5/2P3p1/P6P/K4R2 w - - 0 40"
-    with TestClient(create_app(policy="v6", max_nodes=6000, search_depth=4)) as client:
+    with TestClient(create_app(policy="harness", max_nodes=6000, search_depth=4)) as client:
         client.app.state.chess_game._board = chess.Board(fen)
         agent = ChessAgent(object(), model="fake", http_client=client, reset_game=False,
-                           auto_stop_environment=False, fixed_chess_policy="v6")
+                           auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([
             analysis(nodes=3000, depth=4), {}, analysis(["h5g4"], nodes=2000, depth=4),
@@ -357,10 +357,10 @@ def test_exhausted_replan_allows_only_explicit_llm_risk_commit(monkeypatch, patc
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
     fen = "8/2p1bk1p/3pbp1B/6p1/1P2P3/5P2/2qN1NPP/3R2K1 w - - 0 27"
-    with TestClient(create_app(policy="v6", max_nodes=6000, search_depth=4)) as client:
+    with TestClient(create_app(policy="harness", max_nodes=6000, search_depth=4)) as client:
         client.app.state.chess_game._board = chess.Board(fen)
         agent = ChessAgent(object(), model="fake", http_client=client, reset_game=False,
-                           auto_stop_environment=False, fixed_chess_policy="v6")
+                           auto_stop_environment=False, chess_policy="harness")
         requests = []
         shallow = analysis(["g1h1"], nodes=80, depth=2)
         board = chess.Board(fen)
@@ -390,7 +390,7 @@ ELO2400_LAST_FEN = "3k4/1pr4q/2p1p2r/p2pPb2/Bb6/1P2P3/PRP3P1/2Q2RK1 w - - 3 32"
 
 
 def test_elo2400_mate_regression_requires_llm_repair(patched_app_source):
-    with TestClient(create_app(policy="v6", max_nodes=6000)) as client:
+    with TestClient(create_app(policy="harness", max_nodes=6000)) as client:
         client.app.state.chess_game._board = chess.Board(ELO2400_LAST_FEN)
         state = client.get("/api/state").json()
         request = {"expected_position_id": position_id(state)}
@@ -427,7 +427,7 @@ def test_elo2400_mate_regression_requires_llm_repair(patched_app_source):
 
 
 def test_verification_budget_is_reserved_and_incomplete_checks_fail_closed(patched_app_source):
-    with TestClient(create_app(policy="v6", max_nodes=6000)) as client:
+    with TestClient(create_app(policy="harness", max_nodes=6000)) as client:
         state = client.get("/api/state").json()
         request = {"expected_position_id": position_id(state)}
         denied = client.post("/api/harness-analyze", json=dict(request, action=analysis(nodes=6000)))
@@ -468,8 +468,8 @@ def test_llm_receives_mate_feedback_and_actual_opponent(monkeypatch, tmp_path, p
     engine = Mock(id={"name": "Stockfish test"})
     engine.play.side_effect = [SimpleNamespace(move=chess.Move.from_uci(move)) for move in ("e7e5", "b8c6")]
     monkeypatch.setattr("chess.engine.SimpleEngine.popen_uci", Mock(return_value=engine))
-    with TestClient(create_app(policy="v6", max_nodes=6000, opponent="stockfish", stockfish_elo=2400)) as client:
-        agent = ChessAgent(object(), model="fake", http_client=client, auto_stop_environment=False, fixed_chess_policy="v6")
+    with TestClient(create_app(policy="harness", max_nodes=6000, opponent="stockfish", stockfish_elo=2400)) as client:
+        agent = ChessAgent(object(), model="fake", http_client=client, auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([analysis(nodes=1000, depth=2), analysis(["f2f3"], nodes=1000, depth=2), commit("f2f3"),
                                    analysis(nodes=2000, depth=2), analysis(["g2g4"], nodes=1000, depth=2),
@@ -483,8 +483,8 @@ def test_llm_receives_mate_feedback_and_actual_opponent(monkeypatch, tmp_path, p
         assert "d8h4 mate" in repair["feedback"]["error"]
         assert repair["context"]["opponent"]["elo"] == 2400
         assert "Elo 1500" not in requests[0]["messages"][0]["content"]
-        save_fixed_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
-        from scripts.replay_v3_chess_game import verify
+        save_chess_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
+        from scripts.replay_chess_game import verify
         assert verify(tmp_path/"result.json", REPO/"artifacts/fix.patch")["all_commits_match_llm_response"]
         manifest = json.loads((tmp_path/"manifest.json").read_text())
         assert manifest["verification_reserve_nodes"] == 2000 and manifest["max_analyses_per_turn"] == 4
@@ -494,8 +494,8 @@ def test_illegal_future_continuation_is_audited_without_blocking_llm_commit(monk
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
     monkeypatch.setattr("assignment.chess_artifacts.record_saved_game", lambda _: None)
-    with TestClient(create_app(policy="v6", max_nodes=6000)) as client:
-        agent = ChessAgent(object(), model="fake", http_client=client, auto_stop_environment=False, fixed_chess_policy="v6")
+    with TestClient(create_app(policy="harness", max_nodes=6000)) as client:
+        agent = ChessAgent(object(), model="fake", http_client=client, auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([analysis(nodes=1000, depth=2), analysis(["d2d4"], nodes=1000, depth=2),
                                    commit("d2d4", ["d2d4", "d7d5", "f4g5"]),
@@ -507,11 +507,11 @@ def test_illegal_future_continuation_is_audited_without_blocking_llm_commit(monk
         checks = agent.chess_decisions[0]["continuation_checks"]
         assert not checks["valid"] and "Illegal continuation at ply 3" in checks["error"]
         assert [p["uci"] for p in checks["plies"]] == ["d2d4", "d7d5"]
-        save_fixed_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
+        save_chess_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
         manifest = json.loads((tmp_path/"manifest.json").read_text())
         assert manifest["repair_turns"] == 0 and manifest["replanned_turns"] == 0
         assert manifest["verification_analyses"] == 1
-        from scripts.replay_v3_chess_game import verify
+        from scripts.replay_chess_game import verify
         assert verify(tmp_path/"result.json", REPO/"artifacts/fix.patch")["validated"]
         decisions_path = tmp_path/"decisions.jsonl"
         decision = json.loads(decisions_path.read_text())

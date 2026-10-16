@@ -32,45 +32,45 @@ make run-chess-agent
 See [ASSIGNMENT.md](ASSIGNMENT.md) for context compaction, SWE-bench,
 programmatic chess tools and observation experiments.
 
-## Final chess harness: original r13
+## Compare search and agent harness
 
-The final v6 harness preserves original r13 search, evaluator, budget verification
-and LLM decision authority: `select-move-v6-llm-harness-13`,
-`iterative-alpha-beta-q6-2`, `development-king-safety-v2`, 6,000 nodes and depth 4.
-New runs use `deepseek/deepseek-v4-flash-0731`, configured through `OPENAI_MODEL`
-in `.env`. The reported original-r13 batch used GLM 5.3; those historical results
-remain attributed to that model and do not establish DeepSeek performance.
+Two modes use the same alpha-beta search, quiescence, r13 evaluator
+(`development-king-safety-v2`), 6,000-node ceiling and maximum depth 4:
 
-```bash
-uv run assignment-play-chess \
-  --fixed-chess-policy v6 --max-nodes 6000 --search-depth 4 \
-  --opponent stockfish --stockfish-elo 2000 \
-  --patch artifacts/fix.patch \
-  --trajectory artifacts/assignment2/r13-deepseek/trajectory.json \
-  --result artifacts/assignment2/r13-deepseek/result.json
-```
+| `--policy` | Final move authority | Model calls in the batch runner |
+| --- | --- | --- |
+| `search` | Search picks the best completed result | None |
+| `harness` | LLM requests analysis, reads feedback and explicitly commits a verified move | DeepSeek |
 
-These runs consume Modal and model credits. See the
-[experiment guide](experiments/chess/README.md) for complete batches and offline replay.
-
-## Fixed chess policy baseline
-
-The optional v2 policy runs a deterministic two-ply helper inside the sandbox.
-The model requests turns through `select_and_play`; the helper selects and
-commits each move.
+The harness preserves original r13 planning, verification and commit rules.
+The search control now uses the r13 evaluator as well; historical v5 results used
+an older evaluator and are not this matched control. Budget allocation and
+verification are part of the harness treatment; actual node use and model cost
+must be reported alongside game outcomes. A stronger result is evidence for the
+harness in this setup, not a guaranteed conclusion.
 
 ```bash
-uv run assignment-play-chess \
-  --model deepseek/deepseek-v4-flash-0731 --fixed-chess-policy v2 \
-  --skills-path experiments/chess/skills \
-  --patch artifacts/fix.patch \
-  --trajectory artifacts/assignment2/my-fixed-run/trajectory.json \
-  --result artifacts/assignment2/my-fixed-run/result.json
+BATCH="artifacts/assignment2/ablation-$(date +%Y%m%d-%H%M%S)"
+for POLICY in search harness; do
+  uv run python -m experiments.chess.evaluate_search_policy \
+    --policy "$POLICY" --output "$BATCH/$POLICY" \
+    --model deepseek/deepseek-v4-flash-0731 \
+    --games 5 --max-nodes 6000 --depth 4 --stockfish-elo 2000
+done
 ```
 
-Use a fresh output directory for each run. Do not combine `--fixed-chess-policy`
-with `--programmatic-tools`. See the [experiment guide](experiments/chess/README.md)
-for execution guarantees and limitations.
+Both modes use the same initial board and recorded Stockfish configuration.
+Timed Stockfish replies can vary. These runs consume Modal credits; harness mode
+also consumes model credits. Use a fresh output directory for each batch.
+The ordinary agent CLI exposes the same choices as `--chess-policy search|harness`.
+`harness` is the default in both commands. Use `--policy search` for the batch
+control, or `--chess-policy search` in the agent CLI. `--programmatic-tools`
+selects the original Assignment 1 Python tool mode.
+
+New model calls default to `deepseek/deepseek-v4-flash-0731` through `.env`.
+Historical results retain their GLM metadata. Stable `policy_version` identifiers
+are retained for replay; they are not additional runnable policy choices.
+See the [experiment guide](experiments/chess/README.md) for offline validation.
 
 ## Optional Stockfish opponent
 
@@ -105,7 +105,7 @@ Stockfish uses one thread and a 64 MiB hash table. `--stockfish-path /path/to/st
 selects an executable **on the server host**; a laptop path is unavailable in Modal.
 For a downloaded local version, pass its executable through this flag.
 
-Stockfish mode also works with `--fixed-chess-policy v2`. Saved results include
+Stockfish mode also works with `--chess-policy search` and `--chess-policy harness`. Saved results include
 engine settings; fixed-run manifests and PGNs identify Stockfish. Its time-limited
 search and Elo limiting can produce different replies between runs, so the fixed
 replay checker validates Black's legal moves rather than reproducing them.
@@ -124,9 +124,8 @@ uv run python scripts/check_stockfish_opponent.py --stockfish-path /usr/games/st
 ```bash
 make test
 uv run python -m pytest -q tests experiments/chess
-uv run python scripts/check_fixed_chess_policy.py
-uv run python scripts/replay_fixed_chess_game.py \
-  --result artifacts/assignment2/my-fixed-run/result.json
+uv run python scripts/replay_chess_game.py \
+  --result artifacts/assignment2/RUN/game_1/result.json --report /tmp/replay-report.json
 ```
 
 Replay requires the original helper version, Part 1 patch and manifest.
@@ -137,8 +136,8 @@ To render a saved game, install `ffmpeg` and run:
 
 ```bash
 uv run python scripts/record_chess_game.py \
-  --result artifacts/assignment2/my-fixed-run/result.json \
-  --out artifacts/assignment2/my-fixed-run/game.mp4
+  --result artifacts/assignment2/RUN/game_1/result.json \
+  --out artifacts/assignment2/RUN/game_1/game.mp4
 ```
 
 ## Repository layout
@@ -149,7 +148,7 @@ uv run python scripts/record_chess_game.py \
 | `src/assignment/` | CLI, sandbox runners, servers and artifact handling |
 | `scripts/` | Validation, replay and recording commands |
 | `tests/` | Assignment regression tests |
-| `experiments/chess/` | Extension skills, fixtures and tests |
+| `experiments/chess/` | Controlled evaluation runner and chess tests |
 | `tasks/` | Original task definitions and skills |
 | `chess_app/` | Pinned upstream app submodule |
 | `artifacts/` | Local run outputs and evidence |

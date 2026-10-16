@@ -10,10 +10,10 @@ from assignment.agent.chess_agent import ChessAgent
 from assignment.agent.chess_policy_harness import (
     TACTICAL_PROBE_NODES, analyze, checking_mate_refutation, decision_from, feedback, mate_safety, prepare,
 )
-from assignment.chess_artifacts import save_fixed_run
+from assignment.chess_artifacts import save_chess_run
 from assignment.fixed_chess_server import create_app
 from experiments.chess.test_agent_harness import analysis, commit, fake_client
-from experiments.chess.test_fixed_policy import patched_app_source
+from experiments.chess.test_chess_transactions import patched_app_source
 
 FEN = "8/5bk1/6r1/p1P4p/P4Q2/2P5/4q1PP/5N1K w - - 9 43"
 REPO = Path(__file__).resolve().parents[2]
@@ -31,11 +31,11 @@ def test_r8_turn104_closes_missing_proof_and_llm_finishes_game(monkeypatch, patc
     engine = Mock(id={"name": "Stockfish test"})
     engine.play.side_effect = [SimpleNamespace(move=chess.Move.from_uci(m)) for m in [reply, mate]]
     monkeypatch.setattr("chess.engine.SimpleEngine.popen_uci", Mock(return_value=engine))
-    with TestClient(create_app(policy="v6", max_nodes=6000, search_depth=4,
+    with TestClient(create_app(policy="harness", max_nodes=6000, search_depth=4,
                                opponent="stockfish", stockfish_elo=2000)) as client:
         client.app.state.chess_game._board = chess.Board(fen)
         agent = ChessAgent(object(), model="fake", http_client=client, reset_game=False,
-                           auto_stop_environment=False, fixed_chess_policy="v6")
+                           auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([
             analysis(["h5g4", "h5g5", "h5h6"], nodes=3000, depth=4),
@@ -168,10 +168,10 @@ def test_llm_reads_comparison_and_replans_after_proven_refutation(monkeypatch, p
     monkeypatch.setattr("assignment.agent.chess_policy_harness.EVALUATION", evaluator)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
-    with TestClient(create_app(policy="v6", max_nodes=6000, search_depth=4)) as client:
+    with TestClient(create_app(policy="harness", max_nodes=6000, search_depth=4)) as client:
         client.app.state.chess_game._board = chess.Board(FEN)
         agent = ChessAgent(object(), model="fake", http_client=client, reset_game=False,
-                           auto_stop_environment=False, fixed_chess_policy="v6")
+                           auto_stop_environment=False, chess_policy="harness")
         requests = []
         agent.client = fake_client([
             analysis(nodes=3000, depth=4), analysis(["f4d4"], nodes=2000, depth=4),
@@ -206,16 +206,16 @@ def test_candidate_comparisons_are_replayed_and_tampering_is_detected(monkeypatc
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
     monkeypatch.setattr("assignment.chess_artifacts.record_saved_game", lambda _: None)
-    with TestClient(create_app(policy="v6", max_nodes=6000, search_depth=4)) as client:
-        agent = ChessAgent(object(), model="fake", http_client=client, auto_stop_environment=False, fixed_chess_policy="v6")
+    with TestClient(create_app(policy="harness", max_nodes=6000, search_depth=4)) as client:
+        agent = ChessAgent(object(), model="fake", http_client=client, auto_stop_environment=False, chess_policy="harness")
         agent.client = fake_client([analysis(nodes=1000, depth=2), analysis(["e2e4"], nodes=1000, depth=4),
                                    analysis(["d2d4"], nodes=1000, depth=4), commit("d2d4")], [])
         output = agent.execute_tool_calls([{"id": "act", "function": {"name": "select_and_play", "arguments": "{}"}}])
         assert "<chess_error>" not in output[0]["content"]
-        save_fixed_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
+        save_chess_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
         manifest = json.loads((tmp_path/"manifest.json").read_text())
         assert manifest["tactical_probe_max_nodes"] == TACTICAL_PROBE_NODES
-        from scripts.replay_v3_chess_game import verify
+        from scripts.replay_chess_game import verify
         assert verify(tmp_path/"result.json", REPO/"artifacts/fix.patch")["validated"]
         path = tmp_path/"decisions.jsonl"
         original = path.read_text()

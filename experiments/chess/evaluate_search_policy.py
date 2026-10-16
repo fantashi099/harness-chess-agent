@@ -14,29 +14,31 @@ REPO=Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from assignment.agent.chess_agent import ChessAgent
-from assignment.chess_artifacts import save_fixed_run,search_sources,harness_sources
+from assignment.chess_artifacts import save_chess_run,search_sources,harness_sources
 from assignment.chess_sandbox import ChessSandbox
-from scripts.replay_v3_chess_game import verify
+from scripts.replay_chess_game import verify
 
 def write(path,value):
     path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(json.dumps(value,indent=2)+"\n")
 
 
-def run(output,games,max_nodes,depth,steps=200,policy="v5",model=None,stockfish_elo=1500):
+def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stockfish_elo=1500):
+    if policy not in {"search", "harness"}:
+        raise ValueError("Policy must be search or harness")
     if (output/"experiment-config.json").exists():raise FileExistsError("Choose a fresh output directory")
     output.mkdir(parents=True,exist_ok=True)
-    model = (model or os.environ.get("OPENAI_MODEL")) if policy == "v6" else "deterministic-v5"
+    model = (model or os.environ.get("OPENAI_MODEL")) if policy == "harness" else "deterministic-search"
     if not model:
-        raise ValueError("v6 requires --model or OPENAI_MODEL")
-    config={"policy":policy,"model":model,"max_nodes":max_nodes,"max_depth":depth,"max_games":games,"step_limit":steps,
+        raise ValueError("harness requires --model or OPENAI_MODEL")
+    config={"policy":policy,"model":model,"max_nodes":max_nodes,"max_depth":depth,"evaluation":"development-king-safety-v2","max_games":games,"step_limit":steps,
         "stop_after_replay_validated_win":False,"opponent":{"mode":"stockfish","name":"Stockfish 17.1",
         "elo":stockfish_elo,"move_time":0.2,"threads":1,"hash_mib":64},"teacher_used":False,
         "action_driver":("ChessAgent.execute_tool_calls; real inner LLM planning/evaluation/commit, no outer LLM"
-            if policy == "v6" else "ChessAgent.execute_tool_calls; deterministic controller, no outer LLM API calls")}
+            if policy == "harness" else "ChessAgent.execute_tool_calls; deterministic controller, no outer LLM API calls")}
     write(output/"experiment-config.json",config)
     sources={str(p.relative_to(REPO)):hashlib.sha256(p.read_bytes()).hexdigest()
-             for p in (harness_sources(REPO) if policy == "v6" else search_sources(REPO))}
+             for p in (harness_sources(REPO) if policy == "harness" else search_sources(REPO))}
     for relative in sources:
         dest=output/"source-snapshot"/relative;dest.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(REPO/relative,dest)
@@ -46,11 +48,11 @@ def run(output,games,max_nodes,depth,steps=200,policy="v5",model=None,stockfish_
         directory=output/f"game_{number}";directory.mkdir()
         started=monotonic();actions=[];stop_reason="incomplete";failure_reason=None
         print(f"Starting game {number}: {max_nodes} nodes, target depth {depth}",flush=True)
-        with ChessSandbox(patch=REPO/"artifacts/fix.patch",fixed_chess_policy=policy,max_nodes=max_nodes,
+        with ChessSandbox(patch=REPO/"artifacts/fix.patch",chess_policy=policy,max_nodes=max_nodes,
                           search_depth=depth,opponent="stockfish",stockfish_elo=stockfish_elo,stockfish_time=0.2,
                           deployment_timeout=3600) as sandbox:
             print(f"Chess server: {sandbox.server_url}",flush=True)
-            agent=ChessAgent(sandbox,model=model,fixed_chess_policy=policy,auto_stop_environment=False,step_limit=steps)
+            agent=ChessAgent(sandbox,model=model,chess_policy=policy,auto_stop_environment=False,step_limit=steps)
             agent.action_driver=config["action_driver"]
             assert agent.last_state["fen"]==chess.STARTING_FEN and not agent.last_state["history"]
             assert agent.last_state["opponent"]==config["opponent"]
@@ -81,7 +83,7 @@ def run(output,games,max_nodes,depth,steps=200,policy="v5",model=None,stockfish_
                 if failure_reason is None:
                     stop_reason="terminal" if agent.finished else "step_limit"
                 assert not agent.api_responses
-                if policy == "v5":
+                if policy == "search":
                     assert not agent.planner_records
                 else:
                     assert agent.planner_records and all(d["reason"] == "explicit_llm_commit" for d in agent.chess_decisions)
@@ -89,21 +91,21 @@ def run(output,games,max_nodes,depth,steps=200,policy="v5",model=None,stockfish_
                 stop_reason=type(exc).__name__
                 raise
             finally:
-                save_fixed_run(agent,directory/"result.json",REPO/"artifacts/fix.patch",stop_reason)
+                save_chess_run(agent,directory/"result.json",REPO/"artifacts/fix.patch",stop_reason)
                 write(directory/"trajectory.json",{"action_driver":config["action_driver"],"steps":actions})
         assert all(hashlib.sha256((REPO/p).read_bytes()).hexdigest()==v for p,v in sources.items()),"Source changed during evaluation"
         report=verify(directory/"result.json",REPO/"artifacts/fix.patch")
         write(directory/"replay-report.json",report)
         result=json.loads((directory/"result.json").read_text())
         decisions=[json.loads(s) for s in (directory/"decisions.jsonl").read_text().splitlines()]
-        summary={"game":number,"validated":report["validated"],"completed":report["completed"],
+        summary={"policy":policy,"evaluation":config["evaluation"],"game":number,"validated":report["validated"],"completed":report["completed"],
             "benchmark_outcome": ("win" if report["validated"] and report["completed"] and report["result"] == "1-0"
                 else "draw" if report["validated"] and report["completed"] and report["result"] == "1/2-1/2" else "loss"),
             "result":report["result"],"plies":report["plies"],"white_decisions":len(decisions),
             "mean_completed_depth":sum(d["completed_depth"] for d in decisions)/len(decisions) if decisions else None,
             "nodes":sum(d["nodes_used"] for d in decisions),"seconds_including_replay":monotonic()-started,
             "artifact_errors":result["artifact_errors"], "stop_reason":stop_reason, "failure_reason":failure_reason}
-        if policy == "v6":
+        if policy == "harness":
             manifest = json.loads((directory/"manifest.json").read_text())
             summary.update(llm_responses=manifest["llm_response_count"], llm_token_usage=manifest["llm_token_usage"],
                 changed_first_suggestion=manifest["changed_first_suggestion"], replanned_turns=manifest["replanned_turns"],
@@ -124,8 +126,8 @@ def main(argv=None):
     parser.add_argument("--max-nodes",type=int,default=6000)
     parser.add_argument("--depth",type=int,default=4)
     parser.add_argument("--steps",type=int,default=200)
-    parser.add_argument("--policy",choices=["v5", "v6"],default="v5")
-    parser.add_argument("--model",help="v6 planner/evaluator model; defaults to OPENAI_MODEL")
+    parser.add_argument("--policy",choices=["search", "harness"],default="harness")
+    parser.add_argument("--model",help="harness model; defaults to OPENAI_MODEL")
     strength=parser.add_mutually_exclusive_group()
     strength.add_argument("--stockfish-elo",type=int,default=1500,
                           help="Stockfish strength target within the engine's supported Elo range (default: 1500)")

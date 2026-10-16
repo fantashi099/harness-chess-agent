@@ -48,11 +48,11 @@ def test_recording_publishes_only_successful_video(tmp_path, monkeypatch, capsys
 
 
 @pytest.mark.parametrize("interrupted", [False, True])
-def test_regular_cli_records_after_saving_result(tmp_path, monkeypatch, interrupted):
+def test_programmatic_cli_records_after_saving_result(tmp_path, monkeypatch, interrupted):
     result = tmp_path / "result.json"
     patch = tmp_path / "fix.patch"
     patch.write_text("test patch")
-    monkeypatch.setattr("sys.argv", ["assignment-play-chess", "--model", "test",
+    monkeypatch.setattr("sys.argv", ["assignment-play-chess", "--programmatic-tools", "--model", "test",
         "--patch", str(patch), "--trajectory", str(tmp_path / "trajectory.json"),
         "--result", str(result)])
     sandbox = MagicMock()

@@ -20,11 +20,11 @@ from assignment.chess_server import create_app
 from assignment.fixed_chess_server import create_app as create_fixed_app
 from assignment.agent.chess_policy import position_id
 from assignment.stockfish_game import StockfishGame
-from assignment.chess_artifacts import save_fixed_run
+from assignment.chess_artifacts import save_chess_run
 from assignment.chess_sandbox import ChessSandbox
 
 sys.path.insert(0, str(REPO / "scripts"))
-from replay_fixed_chess_game import verify
+from replay_chess_game import verify
 
 
 def check():
@@ -32,7 +32,7 @@ def check():
     normal_reply = lambda board, limit, **kwargs: SimpleNamespace(move=next(iter(board.legal_moves)))
     engine.play.side_effect = normal_reply
     with patch("chess.engine.SimpleEngine.popen_uci", return_value=engine):
-        with TestClient(create_fixed_app(opponent="stockfish", stockfish_elo=1500)) as client:
+        with TestClient(create_fixed_app(policy="search", max_nodes=1000, search_depth=1, opponent="stockfish", stockfish_elo=1500)) as client:
             engine.configure.assert_called_once_with(
                 {"Threads": 1, "Hash": 64, "UCI_LimitStrength": True, "Skill Level": 20, "UCI_Elo": 1500})
             assert client.post("/api/move", json={"move": "e2e5"}).status_code == 400
@@ -44,24 +44,22 @@ def check():
             assert len(state["history"]) == 2 and state["turn"] == "white"
             assert client.post("/api/select-and-play", json=request).json()["replayed"]
             assert engine.play.call_count == 1
-            assert engine.play.call_args.args[0].move_stack == [chess.Move.from_uci("e2e4")]
+            assert engine.play.call_args.args[0].move_stack == [chess.Move.from_uci(response.json()["decision"]["chosen_move"])]
             with tempfile.TemporaryDirectory() as directory:
                 result_path = Path(directory) / "result.json"
                 agent = SimpleNamespace(
                     chess_client=client, last_state=state, chess_decisions=[],
                     model="test", api_responses=[], skills={}, step_limit=2,
+                    chess_policy="search", planner_records=[],
                     compact_threshold_tokens=None)
-                save_fixed_run(agent, result_path, REPO / "artifacts/fix.patch", "incomplete")
+                save_chess_run(agent, result_path, REPO / "artifacts/fix.patch", "incomplete")
                 manifest = json.loads((result_path.parent / "manifest.json").read_text())
                 assert manifest["opponent"]["mode"] == "stockfish"
                 assert manifest["opponent_depth"] is None
                 assert '[Black "Stockfish test"]' in (result_path.parent / "game.pgn").read_text()
-                saved_state = json.loads(result_path.read_text())
-                saved_state["_manifest_path"] = result_path.parent / "manifest.json"
-                report = verify(saved_state, agent.chess_decisions, REPO / "artifacts/fix.patch")
+                report = verify(result_path, REPO / "artifacts/fix.patch")
                 assert report["all_white_moves_follow_policy"]
-                assert report["all_black_moves_match_bot"] is None
-                assert report["opponent_validation"] == "legal_moves_only"
+                assert report["opponent_validation"] == "legal_moves_and_recorded_config_only"
 
             # Engine errors and invalid replies must roll back the entire turn.
             for failure in (chess.engine.EngineTerminatedError("dead"), TimeoutError(),

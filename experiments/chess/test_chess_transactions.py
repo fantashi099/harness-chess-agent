@@ -11,10 +11,10 @@ from fastapi.testclient import TestClient
 import pytest
 
 from assignment.agent.chess_agent import ChessAgent
-from assignment.agent.chess_policy import position_id, select_move
+from assignment.agent.chess_policy import position_id
 from assignment.chess_server import simulate_position
 from assignment.fixed_chess_server import create_app
-from assignment.chess_artifacts import save_fixed_run
+from assignment.chess_artifacts import save_chess_run
 
 REPO = Path(__file__).resolve().parents[2]
 REGRESSIONS = [
@@ -27,38 +27,6 @@ REGRESSIONS = [
     ("3q4/rp1n3Q/1k6/p3r3/P4RP1/7P/8/R4K2 w - - 2 53",
      "h7d7", "a1b1", -232),
 ]
-
-
-@pytest.mark.parametrize("fen,bad_move,expected,score", REGRESSIONS)
-def test_fixed_policy_regressions(fen, bad_move, expected, score):
-    decision = select_move(fen, simulate_position)
-    assert decision["chosen_move"] == expected
-    assert decision["chosen_move"] != bad_move
-    assert decision["primary_score"] == score
-    assert decision["completed_depth"] == 2
-    assert decision["candidates_evaluated"] == len(simulate_position(fen)["legal_moves"])
-
-
-def test_terminal_and_mate_in_one():
-    terminal = select_move("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1", simulate_position)
-    assert terminal["chosen_move"] is None
-    mate = select_move("7k/5Q2/6K1/8/8/8/8/8 w - - 0 1", simulate_position)
-    assert mate["primary_score"] == 100000
-    assert simulate_position(mate["root_fen"], mate["chosen_move"])["winner"] == "white"
-
-
-def test_search_failure_does_not_return_partial_choice():
-    calls = 0
-
-    def failing_simulator(fen, move=None):
-        nonlocal calls
-        calls += 1
-        if calls == 5:
-            raise RuntimeError("simulation failed")
-        return simulate_position(fen, move)
-
-    with pytest.raises(RuntimeError, match="simulation failed"):
-        select_move(REGRESSIONS[0][0], failing_simulator)
 
 
 @pytest.fixture(scope="session")
@@ -76,7 +44,7 @@ def patched_app_source(tmp_path_factory):
 
 @pytest.fixture
 def client(patched_app_source):
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(policy="search", max_nodes=1000, search_depth=1)) as client:
         yield client
 
 
@@ -92,7 +60,7 @@ def test_duplicate_requests_are_idempotent(client):
     assert again.json()["replayed"]
     assert len(again.json()["state"]["history"]) == 2
     assert len(client.get("/api/policy-decisions").json()) == 1
-    assert first.json()["decision"]["committed_move"] == "e2e4"
+    assert first.json()["decision"]["committed_move"] == first.json()["decision"]["chosen_move"]
 
 
 def test_concurrent_duplicate_requests_commit_only_once(client):
@@ -141,7 +109,7 @@ def test_agent_cannot_bypass_fixed_policy_and_rejects_extra_calls(client, monkey
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
     agent = ChessAgent(object(), model="test-model", http_client=client,
-                       auto_stop_environment=False, fixed_chess_policy="v2")
+                       auto_stop_environment=False, chess_policy="search")
     assert {t["function"]["name"] for t in agent.tools} == {"select_and_play"}
     for name in ("play_move", "run_python", "simulate_move"):
         observations = agent.execute_tool_calls([tool_call(name, {"move": "a2a3"})])
@@ -163,12 +131,12 @@ def test_incomplete_run_recovers_server_decisions_and_saves_artifacts(client, mo
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
     agent = ChessAgent(object(), model="test-model", http_client=client,
-                       auto_stop_environment=False, fixed_chess_policy="v2")
+                       auto_stop_environment=False, chess_policy="search")
     # Simulate a successful commit whose response never reached the agent.
     client.post("/api/select-and-play", json=request_for(client)).raise_for_status()
     assert agent.chess_decisions == []
     result_path = tmp_path / "result.json"
-    save_fixed_run(agent, result_path, REPO / "artifacts/fix.patch", "StepLimitError")
+    save_chess_run(agent, result_path, REPO / "artifacts/fix.patch", "StepLimitError")
     result = json.loads(result_path.read_text())
     assert not result["completed"]
     assert result["stop_reason"] == "StepLimitError"

@@ -11,10 +11,10 @@ from fastapi.testclient import TestClient
 
 from assignment.agent import chess_policy_harness as harness
 from assignment.agent.chess_agent import ChessAgent
-from assignment.chess_artifacts import save_fixed_run
+from assignment.chess_artifacts import save_chess_run
 from assignment.fixed_chess_server import create_app
 from experiments.chess.test_agent_harness import analysis, commit, fake_client
-from experiments.chess.test_fixed_policy import patched_app_source
+from experiments.chess.test_chess_transactions import patched_app_source
 
 CASES = [
     ("2k4r/pp1r1p2/4b1p1/q3P2B/2Pp2PQ/1p6/P4P1P/K1R4R w - - 0 25",
@@ -82,11 +82,11 @@ def test_fake_llm_reaches_risk_commit_and_saved_replay_validates(monkeypatch, pa
     engine.id = {"name": "Stockfish 17.1"}
     engine.play.return_value = SimpleNamespace(move=chess.Move.from_uci(line[1]))
     monkeypatch.setattr("chess.engine.SimpleEngine.popen_uci", Mock(return_value=engine))
-    with TestClient(create_app(policy="v6", max_nodes=6000, search_depth=4,
+    with TestClient(create_app(policy="harness", max_nodes=6000, search_depth=4,
                                opponent="stockfish", stockfish_elo=2000)) as client:
         client.app.state.chess_game._board = chess.Board(fen)
         agent = ChessAgent(object(), model="fake", http_client=client, reset_game=False,
-                           auto_stop_environment=False, fixed_chess_policy="v6")
+                           auto_stop_environment=False, chess_policy="harness")
         requests = []
         broad_depth = 1 if first == "a2a4" else 4
         agent.client = fake_client([analysis(nodes=3000, depth=broad_depth),
@@ -99,7 +99,7 @@ def test_fake_llm_reaches_risk_commit_and_saved_replay_validates(monkeypatch, pa
         assert not feedback["commit_ready_moves"] and not feedback["unavoidable_mate"]
         assert agent.chess_decisions[0]["risk_acceptance"]
         monkeypatch.setattr("assignment.chess_artifacts.record_saved_game", lambda _: None)
-        save_fixed_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
+        save_chess_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
         # This fixture starts midgame; production full-game exports start at the initial board.
         manifest_path = tmp_path/"manifest.json"
         manifest = json.loads(manifest_path.read_text())
@@ -111,5 +111,5 @@ def test_fake_llm_reaches_risk_commit_and_saved_replay_validates(monkeypatch, pa
         for row in agent.last_state["history"]:
             node = node.add_variation(chess.Move.from_uci(row["uci"]))
         (tmp_path/"game.pgn").write_text(str(game)+"\n")
-        from scripts.replay_v3_chess_game import verify
+        from scripts.replay_chess_game import verify
         assert verify(tmp_path/"result.json", REPO/"artifacts/fix.patch")["all_commits_match_llm_response"]

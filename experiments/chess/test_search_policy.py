@@ -8,9 +8,9 @@ from fastapi.testclient import TestClient
 from assignment.agent.chess_policy import evaluate, position_id
 from assignment.agent.chess_policy_search import MATE, select_move, static_score, positional_score
 from assignment.agent.chess_agent import ChessAgent
-from assignment.chess_artifacts import save_fixed_run
+from assignment.chess_artifacts import save_chess_run
 from assignment.fixed_chess_server import create_app
-from experiments.chess.test_fixed_policy import patched_app_source, REGRESSIONS
+from experiments.chess.test_chess_transactions import patched_app_source, REGRESSIONS
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -103,12 +103,12 @@ def test_quiescence_rejects_hanging_queen_capture_at_shallow_horizon():
     assert result["nodes_used"] <= 6000
 
 
-def test_v5_transaction_and_recoverable_artifacts(monkeypatch, tmp_path, patched_app_source):
+def test_search_transaction_and_recoverable_artifacts(monkeypatch, tmp_path, patched_app_source):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://model.test/v1")
-    with TestClient(create_app(policy="v5", max_nodes=100, search_depth=3)) as client:
+    with TestClient(create_app(policy="search", max_nodes=100, search_depth=3)) as client:
         agent = ChessAgent(object(), model="test-model", http_client=client,
-                           auto_stop_environment=False, fixed_chess_policy="v5")
+                           auto_stop_environment=False, chess_policy="search")
         root = position_id(agent.last_state)
         observations = agent.execute_tool_calls([{"id":"turn", "function":{"name":"select_and_play","arguments":"{}"}}])
         assert "<chess_error>" not in observations[0]["content"]
@@ -119,12 +119,12 @@ def test_v5_transaction_and_recoverable_artifacts(monkeypatch, tmp_path, patched
             assert path.is_file() and (path.parent/"manifest.json").is_file()
             recordings.append(path)
         monkeypatch.setattr("assignment.chess_artifacts.record_saved_game", record)
-        save_fixed_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
+        save_chess_run(agent, tmp_path/"result.json", REPO/"artifacts/fix.patch", "step_limit")
         assert recordings == [tmp_path/"result.json"]
         manifest = json.loads((tmp_path/"manifest.json").read_text())
-        assert manifest["search_config"] == {"max_depth":3} and manifest["max_nodes"] == 100
+        assert manifest["search_config"] == {"max_depth":3, "evaluation":"development-king-safety-v2"} and manifest["max_nodes"] == 100
         assert not manifest["memory_used"] and not manifest["teacher_used"]
-        from scripts.replay_v3_chess_game import verify
+        from scripts.replay_chess_game import verify
         assert verify(tmp_path/"result.json", REPO/"artifacts/fix.patch")["validated"]
         client.post("/api/reset").raise_for_status()
         assert client.post("/api/select-and-play", json={"expected_position_id":root}).status_code == 409

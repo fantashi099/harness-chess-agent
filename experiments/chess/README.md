@@ -1,40 +1,29 @@
-# Chess policy experiments
+# Search versus agent harness
 
-The final implementation uses original v6-r13: policy
-`select-move-v6-llm-harness-13`, search `iterative-alpha-beta-q6-2` and evaluator
-`development-king-safety-v2`. The default budget is 6,000 nodes per turn at depth 4.
-The LLM chooses the final move; search supplies bounded evidence.
+Only `search` and `harness` are runnable comparison modes; `harness` is the default. Both use original r13
+search with `development-king-safety-v2`, a 6,000-node ceiling and maximum depth 4.
+The batch runner makes no outer LLM calls. `search` commits the search result;
+`harness` lets DeepSeek plan analysis and choose an explicitly verified move.
 
-## Run original r13
+See the main [README](../../README.md) for matched batch commands. The original
+report's GLM results and legacy policy identifiers remain historical evidence;
+old v5 scores used a different evaluator and cannot serve as this matched control.
 
-Configure `OPENAI_MODEL=deepseek/deepseek-v4-flash-0731` in your local `.env`.
-
-```bash
-uv run python -m experiments.chess.evaluate_search_policy \
-  --policy v6 --output artifacts/assignment2/r13-deepseek \
-  --games 5 --max-nodes 6000 --depth 4 --stockfish-elo 2000
-```
-
-This starts billable Modal sandboxes and real model calls. Use a fresh output
-directory. Every requested game is recorded, including failures and incomplete games.
-The original report batch used GLM 5.3; its results do not measure DeepSeek performance.
-Archived results and source snapshots retain their original model metadata.
-
-## Offline tests and replay
+## Offline checks
 
 ```bash
-uv run python -m pytest -q tests experiments/chess
+make test
 uv run python scripts/check_stockfish_opponent.py
-uv run python scripts/check_fixed_chess_policy.py --output /tmp/fixed-policy-regressions.json
-uv run python scripts/replay_v3_chess_game.py \
+uv run python scripts/replay_chess_game.py \
   --result artifacts/assignment2/RUN/game_1/result.json --report /tmp/replay-report.json
 ```
 
-Replay verifies source hashes, legal history, search evidence and explicit LLM
-commits without calling a model. Stockfish replies are checked for legality and
-recorded configuration; timed replies are not reproduced exactly.
+Replay checks source hashes, legal history, search evidence and explicit model
+commits. Stockfish replies are checked for legality and recorded configuration,
+not reproduced exactly. Archived search/harness implementations are read without
+altering snapshots. Obsolete executable policies, memory planners and their skills
+are kept outside the active codebase; the original assignment remains unchanged.
 
-The v2 baseline and legacy skill remain available. v3/v4 modules are retained for
-existing CLI and replay dependencies. Later revisions, recovery/order/cache patches,
-endgame skills and development notes are kept separately from this active codebase.
-See the main [README](../../README.md) for setup, recording and the original assignment.
+Report all scheduled games, failures, incomplete games, node use and model cost.
+Matched search settings isolate the contribution of harness orchestration and
+verification; outcomes still require repeated full-game measurements.
