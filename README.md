@@ -142,6 +142,11 @@ uv run python scripts/record_chess_game.py \
 
 ## Repository layout
 
+The [local chess research viewer](research_site/README.md) imports historical runs
+without model calls or replay execution. It provides synchronized harness events,
+board states, sanitized trace inspection, and stable event links. See its guide for
+offline imports, local preview, and the required review before a public export.
+
 | Path | Purpose |
 | --- | --- |
 | `src/assignment/agent/` | Shared agent loop, tools and chess policy |
