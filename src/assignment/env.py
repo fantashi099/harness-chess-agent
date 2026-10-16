@@ -1,10 +1,12 @@
 import asyncio
 import posixpath
 import time
+import warnings
 from pathlib import PurePath
 from typing import Any
 
 import modal
+from aiohttp import ClientError
 from swerex.deployment.modal import ModalDeployment
 from swerex.runtime.abstract import Command
 from swerex.runtime.remote import RemoteRuntime
@@ -299,11 +301,24 @@ class Environment:
             # leaks until deployment_timeout. Terminate it explicitly. Grab the
             # reference first: stop() clears _sandbox.
             sandbox = self.deployment._sandbox
+            close_error = None
             try:
-                await asyncio.wait_for(self.deployment.stop(), timeout=timeout)
+                try:
+                    await asyncio.wait_for(self.deployment.stop(), timeout=timeout)
+                except (ClientError, TimeoutError, ConnectionError) as exc:
+                    close_error = exc
             finally:
                 if sandbox is not None:
                     await asyncio.wait_for(sandbox.terminate.aio(), timeout=timeout)
+                    self.deployment._sandbox = None
+                    self.deployment._runtime = None
+            if close_error is not None:
+                if sandbox is None:
+                    raise close_error
+                warnings.warn(
+                    f"Runtime close failed ({type(close_error).__name__}: {close_error}); "
+                    "sandbox termination succeeded.", RuntimeWarning,
+                )
 
         asyncio.run(_stop())
 

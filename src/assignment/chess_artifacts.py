@@ -175,9 +175,10 @@ def save_chess_run(agent, result_path: Path, patch_path: Path, stop_reason: str)
                 search_depth=search_config["search_config"]["max_depth"],search_version=search_config["search_version"],
                 evaluation=search_config["evaluation"])
         if is_harness:
-            from assignment.agent.chess_harness import HARNESS_PROMPT
+            from assignment.agent.chess_harness import HARNESS_PROMPT, REASONING_EFFORT, RESPONSE_FORMAT
             records = agent.planner_records
             manifest.update(planner="llm_harness", decision_authority="llm", llm_model=agent.model,
+                reasoning_effort=REASONING_EFFORT, response_format=RESPONSE_FORMAT,
                 max_llm_calls_per_turn=search_config["max_llm_calls"] if search_config else None,
                 max_analyses_per_turn=search_config["max_analyses"] if search_config else None,
                 verification_reserve_nodes=search_config["verification_reserve"] if search_config else None,

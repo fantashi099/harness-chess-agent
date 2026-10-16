@@ -45,7 +45,8 @@ def test_server_url_is_printed_before_agent_starts(monkeypatch, tmp_path, capsys
 @pytest.mark.parametrize("error,attempts", [("LLM call allowance exhausted (8 calls at this position)", 1),
                                            ("No commit-ready move and analysis budget exhausted", 1),
                                            ("temporary failure", 3)])
-def test_failed_game_is_saved_and_batch_continues(monkeypatch, tmp_path, capsys, error, attempts):
+@pytest.mark.parametrize("replay_failure", [False, True])
+def test_failed_game_is_saved_and_batch_continues(monkeypatch, tmp_path, capsys, error, attempts, replay_failure):
     import chess
     sandbox = Mock(server_url="https://test.w.modal.host")
     context = Mock(__enter__=Mock(return_value=sandbox), __exit__=Mock(return_value=False))
@@ -65,7 +66,8 @@ def test_failed_game_is_saved_and_batch_continues(monkeypatch, tmp_path, capsys,
     save = Mock(side_effect=save_incomplete)
     monkeypatch.setattr(runner, "save_chess_run", save)
     monkeypatch.setattr(runner, "verify", Mock(return_value={"validated": True, "completed": False,
-        "result": "*", "plies": 0, "all_commits_match_llm_response": True}))
+        "result": "*", "plies": 0, "all_commits_match_llm_response": True},
+        side_effect=ValueError("Missing configuration after sandbox disconnect") if replay_failure else None))
     runner.main(["--output", str(tmp_path), "--policy", "harness", "--model", "test", "--stockfish-elo", "2400", "--games", "2"])
     assert agent.execute_tool_calls.call_count == 2*attempts
     assert save.call_count == 2
@@ -75,6 +77,9 @@ def test_failed_game_is_saved_and_batch_continues(monkeypatch, tmp_path, capsys,
     summaries = json.loads((tmp_path/"summary.json").read_text())
     assert len(summaries) == 2
     for summary in summaries:
+        assert summary["validated"] is not replay_failure
+        if replay_failure:
+            assert "Missing configuration" in summary["replay_error"]
         assert summary["result"] == "*" and not summary["completed"]
         assert summary["stop_reason"] == "action_failed" and error in summary["failure_reason"]
         assert summary["mean_completed_depth"] is None and summary["white_decisions"] == 0
@@ -88,3 +93,20 @@ def test_failed_game_is_saved_and_batch_continues(monkeypatch, tmp_path, capsys,
                      "--stockfish-elo", "2400", "--games", "2"])
     save.assert_any_call(agent, tmp_path/"unexpected/game_1/result.json", runner.REPO/"artifacts/fix.patch", "RuntimeError")
     assert not (tmp_path/"unexpected/game_2").exists()
+
+
+@pytest.mark.parametrize("seconds", [3600, 14400])
+def test_sandbox_lifetime_is_configurable_and_recorded(monkeypatch, tmp_path, seconds):
+    sandbox = Mock(side_effect=RuntimeError("stop before deployment"))
+    monkeypatch.setattr(runner, "ChessSandbox", sandbox)
+    with pytest.raises(RuntimeError, match="stop before deployment"):
+        runner.main(["--output", str(tmp_path), "--model", "test",
+                     "--sandbox-timeout", str(seconds)])
+    assert sandbox.call_args.kwargs["deployment_timeout"] == seconds
+    assert json.loads((tmp_path / "experiment-config.json").read_text())["sandbox_timeout"] == seconds
+
+
+def test_nonpositive_sandbox_lifetime_is_rejected(tmp_path):
+    with pytest.raises(SystemExit):
+        runner.main(["--output", str(tmp_path), "--sandbox-timeout", "0"])
+    assert not (tmp_path / "experiment-config.json").exists()

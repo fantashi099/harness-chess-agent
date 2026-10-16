@@ -14,6 +14,7 @@ REPO=Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from assignment.agent.chess_agent import ChessAgent
+from assignment.agent.chess_harness import REASONING_EFFORT, RESPONSE_FORMAT
 from assignment.chess_artifacts import save_chess_run,search_sources,harness_sources
 from assignment.chess_sandbox import ChessSandbox
 from scripts.replay_chess_game import verify
@@ -23,15 +24,19 @@ def write(path,value):
     path.write_text(json.dumps(value,indent=2)+"\n")
 
 
-def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stockfish_elo=1500):
+def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stockfish_elo=1500,sandbox_timeout=3600):
     if policy not in {"search", "harness"}:
         raise ValueError("Policy must be search or harness")
+    if type(sandbox_timeout) is not int or sandbox_timeout < 1:
+        raise ValueError("Positive sandbox timeout required")
     if (output/"experiment-config.json").exists():raise FileExistsError("Choose a fresh output directory")
     output.mkdir(parents=True,exist_ok=True)
     model = (model or os.environ.get("OPENAI_MODEL")) if policy == "harness" else "deterministic-search"
     if not model:
         raise ValueError("harness requires --model or OPENAI_MODEL")
-    config={"policy":policy,"model":model,"max_nodes":max_nodes,"max_depth":depth,"evaluation":"development-king-safety-v2","max_games":games,"step_limit":steps,
+    config={"policy":policy,"model":model,"max_nodes":max_nodes,"max_depth":depth,"evaluation":"development-king-safety-v2","max_games":games,"step_limit":steps,"sandbox_timeout":sandbox_timeout,
+        "reasoning_effort":REASONING_EFFORT if policy == "harness" else None,
+        "response_format":RESPONSE_FORMAT if policy == "harness" else None,
         "stop_after_replay_validated_win":False,"opponent":{"mode":"stockfish","name":"Stockfish 17.1",
         "elo":stockfish_elo,"move_time":0.2,"threads":1,"hash_mib":64},"teacher_used":False,
         "action_driver":("ChessAgent.execute_tool_calls; real inner LLM planning/evaluation/commit, no outer LLM"
@@ -50,7 +55,7 @@ def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stock
         print(f"Starting game {number}: {max_nodes} nodes, target depth {depth}",flush=True)
         with ChessSandbox(patch=REPO/"artifacts/fix.patch",chess_policy=policy,max_nodes=max_nodes,
                           search_depth=depth,opponent="stockfish",stockfish_elo=stockfish_elo,stockfish_time=0.2,
-                          deployment_timeout=3600) as sandbox:
+                          deployment_timeout=sandbox_timeout) as sandbox:
             print(f"Chess server: {sandbox.server_url}",flush=True)
             agent=ChessAgent(sandbox,model=model,chess_policy=policy,auto_stop_environment=False,step_limit=steps)
             agent.action_driver=config["action_driver"]
@@ -94,9 +99,14 @@ def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stock
                 save_chess_run(agent,directory/"result.json",REPO/"artifacts/fix.patch",stop_reason)
                 write(directory/"trajectory.json",{"action_driver":config["action_driver"],"steps":actions})
         assert all(hashlib.sha256((REPO/p).read_bytes()).hexdigest()==v for p,v in sources.items()),"Source changed during evaluation"
-        report=verify(directory/"result.json",REPO/"artifacts/fix.patch")
-        write(directory/"replay-report.json",report)
         result=json.loads((directory/"result.json").read_text())
+        try:
+            report=verify(directory/"result.json",REPO/"artifacts/fix.patch")
+        except Exception as exc:
+            report={"validated":False,"completed":False,"result":"*",
+                "plies":len(agent.last_state["history"]),
+                "error":f"{type(exc).__name__}: {exc}","all_commits_match_llm_response":None}
+        write(directory/"replay-report.json",report)
         decisions=[json.loads(s) for s in (directory/"decisions.jsonl").read_text().splitlines()]
         summary={"policy":policy,"evaluation":config["evaluation"],"game":number,"validated":report["validated"],"completed":report["completed"],
             "benchmark_outcome": ("win" if report["validated"] and report["completed"] and report["result"] == "1-0"
@@ -105,6 +115,8 @@ def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stock
             "mean_completed_depth":sum(d["completed_depth"] for d in decisions)/len(decisions) if decisions else None,
             "nodes":sum(d["nodes_used"] for d in decisions),"seconds_including_replay":monotonic()-started,
             "artifact_errors":result["artifact_errors"], "stop_reason":stop_reason, "failure_reason":failure_reason}
+        if not report["validated"]:
+            summary["replay_error"] = report.get("error")
         if policy == "harness":
             manifest = json.loads((directory/"manifest.json").read_text())
             summary.update(llm_responses=manifest["llm_response_count"], llm_token_usage=manifest["llm_token_usage"],
@@ -126,6 +138,8 @@ def main(argv=None):
     parser.add_argument("--max-nodes",type=int,default=6000)
     parser.add_argument("--depth",type=int,default=4)
     parser.add_argument("--steps",type=int,default=200)
+    parser.add_argument("--sandbox-timeout",type=int,default=3600,
+                        help="maximum sandbox lifetime per game in seconds (default: 3600)")
     parser.add_argument("--policy",choices=["search", "harness"],default="harness")
     parser.add_argument("--model",help="harness model; defaults to OPENAI_MODEL")
     strength=parser.add_mutually_exclusive_group()
@@ -134,9 +148,10 @@ def main(argv=None):
     strength.add_argument("--stockfish-unlimited",action="store_true",
                           help="disable Elo strength limiting and use Skill Level 20; still 0.2 seconds per move")
     args=parser.parse_args(argv)
-    if args.games<1 or args.steps<1:parser.error("Positive game and step limits required")
+    if args.games<1 or args.steps<1 or args.sandbox_timeout<1:parser.error("Positive game, step and timeout limits required")
     run(args.output.resolve(),args.games,args.max_nodes,args.depth,args.steps,args.policy,args.model,
-        stockfish_elo=None if args.stockfish_unlimited else args.stockfish_elo)
+        stockfish_elo=None if args.stockfish_unlimited else args.stockfish_elo,
+        sandbox_timeout=args.sandbox_timeout)
 
 
 if __name__=="__main__":

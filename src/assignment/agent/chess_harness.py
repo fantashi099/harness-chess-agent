@@ -10,6 +10,8 @@ from assignment.agent.chess_tools import _request_state
 BASE_COMPLETION_TOKENS = 4096
 COMMIT_COMPLETION_TOKENS = 4096
 MAX_COMPLETION_TOKENS = 8192
+REASONING_EFFORT = "none"
+RESPONSE_FORMAT = "json_schema"
 
 HARNESS_PROMPT = """You play White. Read the actual opponent configuration from context.opponent. YOU choose the final move.
 Search is an evidence tool, not an authority that commits for you. Return one JSON action, no markdown.
@@ -125,6 +127,34 @@ def action_contract(context, feedback):
     return contract
 
 
+def action_response_format(context, feedback):
+    common = {
+        "objective": {"type": "string", "minLength": 1, "maxLength": 320},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 2000},
+    }
+    branches = []
+    if "analyze" in feedback["allowed_actions"]:
+        properties = dict(common, action={"type": "string", "enum": ["analyze"]},
+            candidate_moves={"type": "array", "items": {"type": "string", "enum": context["legal_moves"]}, "maxItems": 5},
+            max_nodes={"type": "integer", "minimum": 1, "maximum": context["budget"]["max_nodes"]},
+            max_depth={"type": "integer", "minimum": 1, "maximum": context["budget"]["max_depth"]})
+        branches.append({"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False})
+    if "commit" in feedback["allowed_actions"]:
+        for continuation in (False, True):
+            for risk in (False, True):
+                properties = dict(common, action={"type": "string", "enum": ["commit"]},
+                    move={"type": "string", "enum": context["legal_moves"]})
+                if continuation:
+                    properties["continuation"] = {"type": "array", "items": {"type": "string", "minLength": 4, "maxLength": 5}, "minItems": 1, "maxItems": 8}
+                if risk:
+                    properties["accept_risk"] = {"type": "boolean"}
+                branches.append({"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False})
+    if not branches:
+        raise ValueError("No supported actions are allowed")
+    schema = branches[0] if len(branches) == 1 else {"type": "object", "anyOf": branches}
+    return {"type": RESPONSE_FORMAT, "json_schema": {"name": "chess_action", "strict": True, "schema": schema}}
+
+
 def harness_select_and_play(agent, arguments):
     try:
         if json.loads(arguments) != {}:
@@ -160,16 +190,20 @@ def harness_select_and_play(agent, arguments):
             role = "planner" if not feedback["analyses"] else "evaluator"
             messages = [{"role": "system", "content": HARNESS_PROMPT},
                         {"role": "user", "content": json.dumps({"context": context, "feedback": feedback})}]
+            request_options = {"response_format": action_response_format(context, feedback)}
+            if getattr(getattr(agent.client, "base_url", None), "host", None) == "openrouter.ai":
+                request_options["extra_body"] = {"provider": {"require_parameters": True}}
             record = {"position_id": root_id, "role": role, "requested_model": agent.model,
                       "request": messages, "max_completion_tokens": completion_limit,
+                      "reasoning_effort": REASONING_EFFORT, **request_options,
                       "response": None, "status": "rejected"}
             agent.planner_records.append(record)
             started = monotonic()
             action = None
             try:
                 response = agent.client.with_options(timeout=90, max_retries=0).chat.completions.create(
-                    model=agent.model, messages=messages, reasoning_effort="low",
-                    max_completion_tokens=completion_limit, response_format={"type": "json_object"})
+                    model=agent.model, messages=messages, reasoning_effort=REASONING_EFFORT,
+                    max_completion_tokens=completion_limit, **request_options)
                 record["response"] = response.model_dump(mode="json")
                 if response.choices[0].finish_reason != "stop":
                     raise ValueError(f"Incomplete LLM response (finish_reason={response.choices[0].finish_reason}, "

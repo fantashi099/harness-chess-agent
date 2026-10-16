@@ -130,6 +130,10 @@ def verify(result_path, patch):
                             raise ValueError("Missing LLM evidence or call allowance exceeded")
                         accepted = []
                         for record in records:
+                            if "reasoning_effort" in manifest and record.get("reasoning_effort") != manifest["reasoning_effort"]:
+                                raise ValueError("LLM reasoning effort differs from manifest")
+                            if "response_format" in manifest and record.get("response_format", {}).get("type") != manifest["response_format"]:
+                                raise ValueError("LLM response format differs from manifest")
                             request = record["request"]
                             data = json.loads(request[-1]["content"])
                             if data["context"]["position_id"] != decision["position_id"] or data["context"]["fen"] != board.fen():

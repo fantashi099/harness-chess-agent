@@ -1,6 +1,7 @@
 """Regressions from v6-r11-2000-WA2i35an; no provider/Modal calls."""
 import json
 import hashlib
+from types import SimpleNamespace
 from pathlib import Path
 
 import chess
@@ -153,9 +154,14 @@ def test_contract_grounding_commit_and_replay_provenance(monkeypatch, tmp_path, 
         requests = []
         agent.client = fake_client([analysis(nodes=3000, depth=4),
             analysis(["d2d4"], nodes=2000, depth=4), commit("d2d4")], requests)
+        agent.client.base_url = SimpleNamespace(host="openrouter.ai")
         result = agent.execute_tool_calls([{"id": "turn", "function": {"name": "select_and_play", "arguments": "{}"}}])
         assert "<chess_error>" not in result[0]["content"]
         contexts = [json.loads(r["messages"][-1]["content"]) for r in requests]
+        assert all(r["response_format"]["type"] == "json_schema" for r in requests)
+        assert all(r["response_format"]["json_schema"]["strict"] for r in requests)
+        assert all(r["extra_body"] == {"provider": {"require_parameters": True}} for r in requests)
+        assert all(r["reasoning_effort"] == "none" for r in requests)
         assert contexts[0]["feedback"]["action_contract"]["phase"] == "broad_search"
         assert contexts[1]["feedback"]["action_contract"]["phase"] == "verify_or_replan"
         assert contexts[2]["feedback"]["analyses"][-1]["move_facts"]["piece"] == "P"
@@ -178,6 +184,21 @@ def test_contract_grounding_commit_and_replay_provenance(monkeypatch, tmp_path, 
             verify(tmp_path/"result.json", REPO/"artifacts/fix.patch")
         archive.write_bytes(recorder)
     assert verify(tmp_path/"result.json", REPO/"artifacts/fix.patch")["validated"]
+    manifest_path = tmp_path / "manifest.json"
+    original_manifest = manifest_path.read_text()
+    manifest = json.loads(original_manifest)
+    assert manifest["reasoning_effort"] == "none"
+    assert manifest["response_format"] == "json_schema"
+    manifest["reasoning_effort"] = "low"
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="reasoning effort"):
+        verify(tmp_path/"result.json", REPO/"artifacts/fix.patch")
+    manifest = json.loads(original_manifest)
+    manifest["response_format"] = "json_object"
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="response format"):
+        verify(tmp_path/"result.json", REPO/"artifacts/fix.patch")
+    manifest_path.write_text(original_manifest)
     path = tmp_path/"decisions.jsonl"
     original = path.read_text()
     decision = json.loads(original)
