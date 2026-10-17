@@ -51,6 +51,13 @@ def create_app(game=None, *, policy="harness", max_nodes=6000, search_depth=4, *
     working = {}
     app = create_base_app(game, **opponent_options)
     game = app.state.chess_game
+    if opponent_options.get("opponent", "minimax") == "minimax":
+        original_state_unlocked = game._state_unlocked
+
+        def state_with_opponent():
+            return dict(original_state_unlocked(), opponent={"mode": "minimax", "depth": game.engine_depth})
+
+        game._state_unlocked = state_with_opponent
     # RLock allows state()/play_human_move() to use the same lock while this
     # endpoint owns the entire selection/commit transaction.
     game._lock = RLock()

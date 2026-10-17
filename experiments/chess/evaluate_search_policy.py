@@ -24,9 +24,11 @@ def write(path,value):
     path.write_text(json.dumps(value,indent=2)+"\n")
 
 
-def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stockfish_elo=1500,sandbox_timeout=3600):
+def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stockfish_elo=1500,sandbox_timeout=3600,opponent="stockfish"):
     if policy not in {"search", "harness"}:
         raise ValueError("Policy must be search or harness")
+    if opponent not in {"stockfish", "minimax"}:
+        raise ValueError("Opponent must be stockfish or minimax")
     if type(sandbox_timeout) is not int or sandbox_timeout < 1:
         raise ValueError("Positive sandbox timeout required")
     if (output/"experiment-config.json").exists():raise FileExistsError("Choose a fresh output directory")
@@ -37,8 +39,9 @@ def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stock
     config={"policy":policy,"model":model,"max_nodes":max_nodes,"max_depth":depth,"evaluation":"development-king-safety-v2","max_games":games,"step_limit":steps,"sandbox_timeout":sandbox_timeout,
         "reasoning_effort":REASONING_EFFORT if policy == "harness" else None,
         "response_format":RESPONSE_FORMAT if policy == "harness" else None,
-        "stop_after_replay_validated_win":False,"opponent":{"mode":"stockfish","name":"Stockfish 17.1",
-        "elo":stockfish_elo,"move_time":0.2,"threads":1,"hash_mib":64},"teacher_used":False,
+        "stop_after_replay_validated_win":False,"opponent":({"mode":"stockfish","name":"Stockfish 17.1",
+        "elo":stockfish_elo,"move_time":0.2,"threads":1,"hash_mib":64}
+        if opponent == "stockfish" else {"mode":"minimax","depth":2}),"teacher_used":False,
         "action_driver":("ChessAgent.execute_tool_calls; real inner LLM planning/evaluation/commit, no outer LLM"
             if policy == "harness" else "ChessAgent.execute_tool_calls; deterministic controller, no outer LLM API calls")}
     write(output/"experiment-config.json",config)
@@ -54,7 +57,8 @@ def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stock
         started=monotonic();actions=[];stop_reason="incomplete";failure_reason=None
         print(f"Starting game {number}: {max_nodes} nodes, target depth {depth}",flush=True)
         with ChessSandbox(patch=REPO/"artifacts/fix.patch",chess_policy=policy,max_nodes=max_nodes,
-                          search_depth=depth,opponent="stockfish",stockfish_elo=stockfish_elo,stockfish_time=0.2,
+                          search_depth=depth,opponent=opponent,
+                          stockfish_elo=stockfish_elo if opponent == "stockfish" else None,stockfish_time=0.2,
                           deployment_timeout=sandbox_timeout) as sandbox:
             print(f"Chess server: {sandbox.server_url}",flush=True)
             agent=ChessAgent(sandbox,model=model,chess_policy=policy,auto_stop_environment=False,step_limit=steps)
@@ -108,7 +112,7 @@ def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stock
                 "error":f"{type(exc).__name__}: {exc}","all_commits_match_llm_response":None}
         write(directory/"replay-report.json",report)
         decisions=[json.loads(s) for s in (directory/"decisions.jsonl").read_text().splitlines()]
-        summary={"policy":policy,"evaluation":config["evaluation"],"game":number,"validated":report["validated"],"completed":report["completed"],
+        summary={"policy":policy,"evaluation":config["evaluation"],"opponent":config["opponent"],"game":number,"validated":report["validated"],"completed":report["completed"],
             "benchmark_outcome": ("win" if report["validated"] and report["completed"] and report["result"] == "1-0"
                 else "draw" if report["validated"] and report["completed"] and report["result"] == "1/2-1/2" else "loss"),
             "result":report["result"],"plies":report["plies"],"white_decisions":len(decisions),
@@ -134,24 +138,28 @@ def run(output,games,max_nodes,depth,steps=200,policy="harness",model=None,stock
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output",type=Path,required=True)
-    parser.add_argument("--games",type=int,default=3)
+    parser.add_argument("--games",type=int,default=10)
     parser.add_argument("--max-nodes",type=int,default=6000)
     parser.add_argument("--depth",type=int,default=4)
     parser.add_argument("--steps",type=int,default=200)
     parser.add_argument("--sandbox-timeout",type=int,default=3600,
                         help="maximum sandbox lifetime per game in seconds (default: 3600)")
     parser.add_argument("--policy",choices=["search", "harness"],default="harness")
+    parser.add_argument("--opponent",choices=["stockfish", "minimax"],default="stockfish")
     parser.add_argument("--model",help="harness model; defaults to OPENAI_MODEL")
     strength=parser.add_mutually_exclusive_group()
-    strength.add_argument("--stockfish-elo",type=int,default=1500,
+    strength.add_argument("--stockfish-elo",type=int,
                           help="Stockfish strength target within the engine's supported Elo range (default: 1500)")
     strength.add_argument("--stockfish-unlimited",action="store_true",
                           help="disable Elo strength limiting and use Skill Level 20; still 0.2 seconds per move")
     args=parser.parse_args(argv)
     if args.games<1 or args.steps<1 or args.sandbox_timeout<1:parser.error("Positive game, step and timeout limits required")
+    if args.opponent == "minimax" and (args.stockfish_elo is not None or args.stockfish_unlimited):
+        parser.error("Stockfish strength flags require --opponent stockfish")
     run(args.output.resolve(),args.games,args.max_nodes,args.depth,args.steps,args.policy,args.model,
-        stockfish_elo=None if args.stockfish_unlimited else args.stockfish_elo,
-        sandbox_timeout=args.sandbox_timeout)
+        stockfish_elo=(args.stockfish_elo if args.stockfish_elo is not None else 1500)
+            if args.opponent == "stockfish" and not args.stockfish_unlimited else None,
+        sandbox_timeout=args.sandbox_timeout,opponent=args.opponent)
 
 
 if __name__=="__main__":

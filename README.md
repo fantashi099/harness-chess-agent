@@ -51,15 +51,29 @@ harness in this setup, not a guaranteed conclusion.
 
 ```bash
 BATCH="artifacts/assignment2/ablation-$(date +%Y%m%d-%H%M%S)"
-for POLICY in search harness; do
-  uv run python -m experiments.chess.evaluate_search_policy \
-    --policy "$POLICY" --output "$BATCH/$POLICY" \
-    --model deepseek/deepseek-v4-flash-0731 \
-    --games 5 --max-nodes 6000 --depth 4 --stockfish-elo 2000
+for ELO in 1500 1800 2000; do
+  for POLICY in search harness; do
+    uv run python -m experiments.chess.evaluate_search_policy \
+      --policy "$POLICY" --opponent stockfish --output "$BATCH/$ELO/$POLICY" \
+      --model deepseek/deepseek-v4.1-flash \
+      --games 10 --max-nodes 6000 --depth 4 --stockfish-elo "$ELO" \
+      --sandbox-timeout 14400
+  done
 done
+
+uv run python -m experiments.chess.evaluate_search_policy \
+  --policy harness --opponent minimax --output "$BATCH/minimax/harness" \
+  --model deepseek/deepseek-v4.1-flash \
+  --games 10 --max-nodes 6000 --depth 4 --sandbox-timeout 14400
 ```
 
-Both modes use the same initial board and recorded Stockfish configuration.
+This schedules 60 Stockfish games and 10 harness games against the original
+Assignment 1 minimax depth-2 opponent. The batch runner defaults to 10 games and
+Stockfish at Elo 1500; select minimax explicitly and omit Stockfish strength flags.
+Both modes play White from the same initial board. Stockfish runs record the same
+opponent settings: Skill Level 20 with Elo limiting at the requested target.
+`UCI_Elo` takes precedence over Skill Level when strength limiting is enabled;
+these are not unlimited-strength games.
 Timed Stockfish replies can vary. These runs consume Modal credits; harness mode
 also consumes model credits. Use a fresh output directory for each batch.
 The ordinary agent CLI exposes the same choices as `--chess-policy search|harness`.
@@ -68,7 +82,7 @@ control, or `--chess-policy search` in the agent CLI. `--programmatic-tools`
 selects the original Assignment 1 Python tool mode.
 
 New model calls default to `deepseek/deepseek-v4-flash-0731` through `.env`.
-Historical results retain their GLM metadata. Stable `policy_version` identifiers
+Historical results retain their original model metadata. Stable `policy_version` identifiers
 are retained for replay; they are not additional runnable policy choices.
 See the [experiment guide](experiments/chess/README.md) for offline validation.
 

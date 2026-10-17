@@ -18,8 +18,15 @@ automatic action repair, JSON-mode fallback or code-selected move. Config and
 manifest record the response format; each trace records its exact schema and
 provider preferences. Historical runs keep their original transport metadata.
 
-See the main [README](../../README.md) for matched batch commands. The original
-report's GLM results and legacy policy identifiers remain historical evidence;
+See the main [README](../../README.md) for the seven 10-game batches: two modes at
+Stockfish Elo 1500/1800/2000, plus harness against the original minimax depth 2.
+`--opponent stockfish` is the batch default; `--opponent minimax` reuses the original
+opponent without installing Stockfish. Stockfish strength flags are rejected for
+minimax. Each summary row identifies the opponent; config, state and manifest must
+agree. Source snapshots, per-game trajectories, decisions and replay reports are
+saved for both opponents. Minimax replies are replayed exactly.
+
+The original report's results and legacy policy identifiers remain historical evidence;
 old v5 scores used a different evaluator and cannot serve as this matched control.
 
 ## Offline checks

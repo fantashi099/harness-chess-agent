@@ -140,7 +140,7 @@ def verify(result_path, patch):
                                 raise ValueError("LLM request used stale state")
                             if getattr(harness, "REVISION", 0) >= 12 and data["context"]["board_facts"] != harness.board_facts(board):
                                 raise ValueError("LLM request board_facts differ")
-                            if hasattr(harness, "EVALUATION") and data["context"]["opponent"] != (opponent if opponent["mode"] == "stockfish" else None):
+                            if hasattr(harness, "EVALUATION") and data["context"]["opponent"] != state.get("opponent"):
                                 raise ValueError("LLM request used a different opponent")
                             if hashlib.sha256(request[0]["content"].encode()).hexdigest() != manifest["harness_prompt_sha256"]:
                                 raise ValueError("Harness prompt differs")
