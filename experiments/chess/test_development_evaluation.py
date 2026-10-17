@@ -1,4 +1,4 @@
-"""Development regressions from r12 and grounding; no model or opponent calls."""
+"""Development evaluation and legal move grounding regressions."""
 import chess
 import pytest
 

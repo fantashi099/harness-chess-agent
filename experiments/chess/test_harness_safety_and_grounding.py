@@ -1,4 +1,4 @@
-"""Regressions from v6-r11-2000-WA2i35an; no provider/Modal calls."""
+"""Checking-chain safety, grounded facts and action contract regressions."""
 import json
 import hashlib
 from types import SimpleNamespace
