@@ -177,7 +177,11 @@ def export_reviewed(site, destination):
         path = site / name
         if path.is_symlink() or any(p.is_symlink() for p in path.rglob("*") if path.is_dir()):
             raise ValueError("Symlinks are not allowed in public exports")
-        shutil.copytree(path, destination / name) if path.is_dir() else shutil.copy2(path, destination / name)
+        # The viewer reads event indexes directly; generated search text duplicates the traces.
+        if path.is_dir():
+            shutil.copytree(path, destination / name, ignore=shutil.ignore_patterns("search.json"))
+        else:
+            shutil.copy2(path, destination / name)
     return {str(p.relative_to(destination)): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(destination.rglob("*")) if p.is_file()}
 

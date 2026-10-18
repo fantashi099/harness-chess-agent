@@ -55,6 +55,8 @@ uv run python -m assignment.viewer export --output .private/chess-trajectories/d
 
 Review the sanitized dataset before export. The export allowlist contains only
 `index.html`, `viewer.html`, `styles.css`, `app.js`, `model.js` and `data/`.
+Unused generated `search.json` indexes are excluded; the viewer reads event indexes
+and source records directly. All recorded events, prompts and reasoning remain.
 No blog, environment file, original artifact, source snapshot or server code is
 published. The importer redacts secrets, credentials, personal identifiers, URLs
 and local filesystem paths, including JSON embedded in transcripts.

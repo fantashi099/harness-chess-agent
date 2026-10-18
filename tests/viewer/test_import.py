@@ -191,6 +191,7 @@ def test_export_only_browser_files(tmp_path):
     for name in ["index.html", "viewer.html", "styles.css", "app.js", "model.js"]:
         (site / name).write_text("synthetic asset")
     dump(site / "data/manifest.json", dict(schema_version=1, runs=[]))
+    dump(site / "data/runs/synthetic/game_1/search.json", {"unused": "generated search text"})
     (site / "blog.js").write_text("ARCHIVED_BLOG_ONLY")
     (site / "blog.css").write_text("ARCHIVED_BLOG_ONLY")
     (site / ".env").write_text("NEVER_PUBLIC")
@@ -198,6 +199,8 @@ def test_export_only_browser_files(tmp_path):
     dest = tmp_path / "reviewed"
     hashes = export_reviewed(site, dest)
     assert ".env" not in hashes and "README.md" not in hashes
+    assert (site / "data/runs/synthetic/game_1/search.json").exists()
+    assert not (dest / "data/runs/synthetic/game_1/search.json").exists()
     assert set(hashes) == {"index.html", "viewer.html", "styles.css", "app.js", "model.js", "data/manifest.json"}
 
 
