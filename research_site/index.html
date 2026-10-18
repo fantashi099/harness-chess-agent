@@ -1,14 +1,12 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Explore 40 recorded chess games: LLM + Tools and Tools Only against Stockfish at 1500 and 2000 Elo."><title>Chess trajectories — 40 recorded games</title><link rel="stylesheet" href="styles.css?v=28"></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Explore 20 recorded LLM chess-agent games against Stockfish at 1500 and 2000 Elo."><title>Chess trajectories — 20 recorded games</title><link rel="stylesheet" href="styles.css?v=29"></head>
 <body class="viewer-page">
 <main class="viewer-main">
 <header class="viewer-toolbar" aria-label="Trajectory controls">
 <h1><span class="brand-icon" aria-hidden="true">♞</span> Chess traces</h1>
-<label class="mode-picker">Mode<select id="mode-select" aria-label="Strategy mode"><option value="" disabled>Recorded run</option><option value="harness">LLM + Tools</option><option value="search">Tools Only</option></select></label>
 <label class="elo-picker">Elo<select id="elo-select" aria-label="Opponent Elo"><option value="1500">1500</option><option value="2000">2000</option></select></label>
 <label class="game-picker">Game<select id="game-select"></select></label>
 </header>
-<div id="comparison" class="comparison-strip" aria-label="Results comparison at selected Elo"></div>
 <div class="mobile-tabs" role="tablist" aria-label="Viewer panels"><button role="tab" aria-selected="true" data-panel="timeline">Timeline</button><button role="tab" aria-selected="false" data-panel="board">Board</button><button role="tab" aria-selected="false" data-panel="trace">Trace</button></div>
 <div class="workspace" id="workspace" data-mobile="timeline">
 <section class="timeline-panel panel" aria-label="Event timeline"><div class="panel-heading"><h2><span class="panel-number">01</span> Timeline</h2><span id="event-count" class="quiet-label"></span></div><div class="timeline-controls"><label class="filter-label">EVENT TYPE<select id="event-filter"><option value="">All events</option></select></label></div><div id="timeline" class="timeline-list" tabindex="0" aria-label="Recorded events"></div><div class="timeline-footer"><span id="filter-status"></span></div></section>
@@ -26,4 +24,4 @@
 <p><strong>Depth is separate.</strong> Depth 4 targets White–Black–White–Black. If nodes run out, the last completed depth is retained. Quiescence may extend captures, promotions and check evasions, using the same budget.</p>
 <p>This does not limit LLM tokens, elapsed time or Stockfish’s search. LLM + Tools shows usage after the turn’s final verification. Tools Only shows total usage for that turn’s search.</p>
 </div>
-<script type="module" src="app.js?v=28"></script></body></html>
+<script type="module" src="app.js?v=29"></script></body></html>

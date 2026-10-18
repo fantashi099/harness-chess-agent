@@ -1,8 +1,9 @@
 # Chess trajectories
 
-Standalone, static explorer for **40 recorded games**: LLM + Tools and Tools Only,
-each against Stockfish at 1500 and 2000 Elo, with 10 games in each group.
-The root page is the trajectory viewer: selectors, timeline, board and trace inspector.
+Standalone, static explorer for **20 recorded games** from the LLM chess agent,
+against Stockfish at 1500 and 2000 Elo, with 10 games at each Elo.
+The root page contains Elo and Game selectors, timeline, board and trace inspector.
+There is no mode selector or results comparison strip.
 There is no blog, backend, model call or engine execution on this website.
 
 Public site: https://fantashi099.github.io/chess-trajectories/
@@ -29,24 +30,23 @@ redirect to the root while preserving their selection.
 Generated data stays ignored by Git. Earlier imported demos are retained locally
 under `.private/chess-viewer-extra-runs`, outside the public site. Original run
 artifacts are never modified. Rebuilding from the benchmark imports only the four
-immediate policy/Elo groups; nested source archives are excluded.
+immediate policy/Elo groups; nested source archives are excluded. The viewer only
+loads Harness runs; the public catalog and publication contain only the two Harness groups.
 
 ## Recorded collection
 
-| Elo | Tools Only | LLM + Tools |
-| --- | --- | --- |
-| 1500 | 4 wins / 1 draw / 5 losses | 6 wins / 2 draws / 2 losses |
-| 2000 | 3 wins / 2 draws / 5 losses | 4 wins / 1 draw / 5 losses |
+| Elo | Recorded games |
+| --- | --- |
+| 1500 | 10 |
+| 2000 | 10 |
 
-The comparison strip counts unfinished games as losses; individual game labels
-retain completion status. **The 2000 LLM + Tools group was selected retrospectively
-by outcome across three source runs.** It is a case-study collection, not a
-representative win-rate estimate. Selection provenance stays in its run manifest.
+Individual game labels retain completion status. **The 2000 Elo group was selected
+retrospectively by outcome across three source runs.** It is a case-study collection,
+not a representative win-rate estimate. Selection provenance stays in its run manifest.
 These recordings do not demonstrate Reflexion or learning between games.
 
 Trace fields are recorded evidence. Missing thinking is never synthesized;
-a model's rationale remains its claim. Tools Only displays search evidence
-without inventing model calls. Board positions and playback follow actual moves,
+a model's rationale remains its claim. Board positions and playback follow actual moves,
 not hypothetical principal variations. Per-call durations are not timestamps.
 
 ## Export and publish

@@ -1,4 +1,4 @@
-import {readSelection, selectionHash, resolveEvent, squaresFromFen, resolveRun, traceTurns, turnSteps, navigateTurn, recordedOutcome, turnEvidence, recordedMoves, lastMovesByColor, benchmarkRun, resultCounts} from './model.js?v=28';
+import {readSelection, selectionHash, resolveEvent, squaresFromFen, resolveRun, traceTurns, turnSteps, navigateTurn, recordedOutcome, turnEvidence, recordedMoves, lastMovesByColor, benchmarkRun} from './model.js?v=29';
 
 const $ = id => document.getElementById(id);
 const cache = new Map();
@@ -28,7 +28,6 @@ const modeLabels = {harness:'LLM + Tools', search:'Tools Only'};
 const outcome = game => game.completed === true ? ({'1-0':'White win','0-1':'White loss','1/2-1/2':'Draw'}[game.outcome] ?? 'Complete · outcome unavailable') : game.completed === false ? 'Incomplete' : 'Completion unavailable';
 
 let catalog, run, game, gameSummary, selected, base, payload;
-const benchmarks = new Map();
 let traceMode = 'react', flipped = false, routeGeneration = 0, traceGeneration = 0;
 let playing = false, playTimer;
 let recordedPlies = [], boardState = null, boardAnimationGeneration = 0, boardAnimations = [];
@@ -358,9 +357,7 @@ async function route() {
   status(game.warnings.join('; '));
   if (selection.event && selected?.id !== selection.event) status('Requested event unavailable; showing the first recorded event.');
   if (selected) history.replaceState(null, '', currentLink(selected));
-  $('mode-select').value = run.policy ?? '';
   $('elo-select').value = String(run.elo ?? summary.opponent?.elo ?? 1500);
-  renderComparison();
   $('game-select').replaceChildren(...run.games.map(g => option(g.id, `${g.id.replace('_', ' ')} · ${outcome(g)}`)));
   $('game-select').value = game.id;
   $('event-count').textContent = `${game.events.length} EVENTS`;
@@ -375,23 +372,8 @@ async function route() {
   if (playing && generation === routeGeneration) scheduleNextTurn();
 }
 
-function renderComparison() {
-  const nodes = [];
-  for (const policy of ['harness','search']) {
-    const entry = benchmarkRun(catalog, policy, $('elo-select').value);
-    const data = benchmarks.get(entry?.id);
-    if (!data) continue;
-    const counts = resultCounts(data.games);
-    const button = el('button', 'comparison-choice', `${modeLabels[policy]} · ${counts.wins}W / ${counts.draws}D / ${counts.losses + counts.incomplete}L${counts.unknown ? ` / ${counts.unknown} unknown` : ''}`);
-    button.setAttribute('aria-pressed', String(entry.id === run.id));
-    button.title = `${data.games.length} games · White results · ${entry.elo} Elo`;
-    button.addEventListener('click', () => switchBenchmark(policy, entry.elo));
-    nodes.push(button);
-  }
-  $('comparison').replaceChildren(...nodes);
-}
-function switchBenchmark(policy, elo) {
-  const entry = benchmarkRun(catalog, policy, elo);
+function switchBenchmark(elo) {
+  const entry = benchmarkRun(catalog, 'harness', elo);
   if (!entry) return;
   setPlaying(false);
   location.hash = selectionHash(entry.id, game?.id ?? '', '');
@@ -425,9 +407,8 @@ function setupViewer() {
   help.addEventListener('toggle',() => helpTrigger.setAttribute('aria-expanded',String(help.matches(':popover-open'))));
   document.querySelector('.board-scroll').addEventListener('scroll',hideBudgetHelp);
   window.addEventListener('resize',hideBudgetHelp);
-  $('mode-select').disabled = $('elo-select').disabled = !benchmarks.size;
-  $('mode-select').addEventListener('change', () => switchBenchmark($('mode-select').value, $('elo-select').value));
-  $('elo-select').addEventListener('change', () => switchBenchmark($('mode-select').value || 'harness', $('elo-select').value));
+  $('elo-select').disabled = !catalog.runs.length;
+  $('elo-select').addEventListener('change', () => switchBenchmark($('elo-select').value));
   $('game-select').addEventListener('change', () => {setPlaying(false);location.hash = selectionHash(run.id, $('game-select').value, '');});
   $('event-filter').addEventListener('change', () => renderTimeline());
   $('first-event').addEventListener('click', () => navigate(-game.events.length));
@@ -497,7 +478,7 @@ function setupViewer() {
 try {
   catalog = await json('data/manifest.json');
   if (catalog.schema_version !== 1) throw new Error('Unsupported dataset version.');
-  await Promise.all(catalog.runs.filter(r => r.collection === 'benchmark-report').map(async r => benchmarks.set(r.id, await json(`data/${r.path}`))));
+  catalog.runs = catalog.runs.filter(r => r.policy === 'harness');
   setupViewer();await route();
 } catch (error) {
   status(error.message);
