@@ -7,16 +7,24 @@ The existing Python environment supplies `python-chess`; browsers load ordinary 
 ## Local setup
 
 From the repository root, install the existing project dependencies with `uv sync`.
-Import a run, then serve **only this directory**:
+Import the benchmark report, then serve **only this directory**:
 
 ```bash
-uv run python -m assignment.viewer import artifacts/assignment2/RUN --run-id my-run
+uv run python -m assignment.viewer benchmark artifacts/assignment2/benchmark-report --default
 uv run python -m http.server 8765 --bind 127.0.0.1 --directory research_site
 ```
 
 Open [the main page](http://127.0.0.1:8765/) or
-[the viewer directly](http://127.0.0.1:8765/viewer.html). The main page redirects to the
-viewer, preserving query strings and event hashes. There is no separate project page. Do not use `file://`: dataset fetching
+[the viewer directly](http://127.0.0.1:8765/viewer.html). The main page is the Vietnamese
+technical blog, centered on the Stockfish 1500 evaluation; 2000 examples are in its
+appendix. Blog and Trajectories share the dark palette and compact project navigation.
+Game cards read the imported benchmark catalog; featured examples link to recorded
+events (game 1 repair, game 9 mate, game 4 incomplete). The article is an editorial
+snapshot of the V1 report, not a live scoreboard; re-check its figures when revising
+the evaluation. Game cards and their outcomes always read the imported dataset. Blog navigation returns to
+the originating section when session storage is available. Existing root URLs with
+`#run=...&game=...&event=...` still redirect to the viewer without losing their hash.
+Do not use `file://`: dataset fetching
 requires HTTP. Bind to loopback for local inspection. Do not serve the repository root.
 Generated `data/` is ignored by Git; keep private originals under `artifacts/`.
 
@@ -26,7 +34,37 @@ the previous inspector tabs. Browser assets now have versioned URLs, and dataset
 requests bypass the browser cache. Bump the matching HTML asset and JS module query
 versions together whenever shipping changes to their shared interface.
 
-The default batch now contains all five games from the v41 schema run:
+The default dataset is `artifacts/assignment2/benchmark-report`: **LLM + Tools**
+(the `harness` policy) first, then **Tools Only** (the `search` policy), each against
+Stockfish at 1500 and 2000 Elo. New imports default to LLM + Tools at 1500 Elo.
+The stored policy names and existing run/event URLs remain unchanged.
+The dark viewer has Mode, Elo and Game selectors. The comparison strip shows White
+wins/draws/losses at the selected Elo; unfinished games count as losses in this
+summary. Stored completion flags and individual game labels retain their recorded values.
+The header contains only Mode, Elo and Game selectors. Configuration and provenance
+remain in the imported JSON files. Explicit historical event links still work.
+
+The importer reads only the four immediate `stockfish-{1500,2000}/{search,harness}`
+groups, excluding archived copies under `sources/`, reports and logs. It stages all
+four groups before adding them to the catalog and never overwrites imported IDs.
+Games are ordered numerically, including `game_10`. Originals are never modified.
+
+| Elo | Tools Only | LLM + Tools |
+| --- | --- | --- |
+| 1500 | 4 wins / 1 draw / 5 losses | 6 wins / 2 draws / 2 losses |
+| 2000 | 3 wins / 2 draws / 5 losses | 4 wins / 1 draw / 5 losses |
+
+**The 2000 Harness set is retrospectively selected by outcome across three source
+runs.** It is a case-study collection, not a representative win-rate estimate or a
+controlled comparison. Its stored `selection.json` remains in the imported run manifest.
+
+Pure Search stores candidate scores and budget at the decision root instead of
+Harness feedback. The importer preserves those as search-result events before
+commit/opponent events. The board shows total Search usage, or final verification
+usage in Harness. Search's inspector shows recorded search evidence without
+inventing prompts, thinking or model calls.
+
+The earlier five-game v41 schema batch remains supported:
 
 ```bash
 uv run python -m assignment.viewer import artifacts/assignment2/harness-v41-schema-20261016-214857 --run-id harness-v41-schema-20261016-214857 --default
@@ -73,7 +111,7 @@ its React/Vinext stack is not required for this static dataset.
 | `decisions.jsonl` | One White decision per line, root/post FEN, UCI move, opponent move, analysis trace, optional embedded harness records | Commit/opponent events; search-only or embedded-record fallback when separate harness trace is absent |
 | `result.json` | Final state, completion flag, stop reason, move history, terminal result when available | Completion/outcome metadata; legal move-history fallback |
 | `game.pgn` | Standard saved game | Legal replay fallback when detailed events and result history are absent |
-| `manifest.json` | Harness/search/evaluator versions, configuration, model usage, source hashes | Run details and provenance, sanitized metadata file |
+| `manifest.json` | Harness/search/evaluator versions, configuration, model usage, source hashes | Provenance in the sanitized metadata file |
 | `experiment-config.json`, `source-freeze.json` | Batch settings and source hash map | Version-independent run manifest; source-snapshot reference retained |
 | `trajectory.json` | Outer driver steps or older transcript fields | Retained intact after sanitization in lazy metadata; no speculative outer-transcript parser |
 
@@ -141,8 +179,8 @@ unavailable. Only `completed=true` with a recorded terminal result has an outcom
 
 ## Viewer behavior
 
-A compact toolbar contains the title, run/game selectors, Copy link and Run details.
-Model, budget and outcome remain in the board, game selector and run details.
+A compact toolbar contains the title and Mode, Elo and Game selectors.
+Model, budget and outcome remain in the board and game selector.
 Desktop has three independently scrolling panels with pointer and arrow-key resize
 handles. Small screens use Timeline / Board / Trace tabs. Native controls and details
 are keyboard accessible; Left/Right outside controls navigates turns. Previous/Next and First/Last also navigate turns. Play advances immediately, then one turn every 2
@@ -180,14 +218,14 @@ The trace inspector has two keyboard-accessible tabs:
 
 - **Reasoning & tool:** a compact list of color-coded accordion rows for the selected
   turn, initially collapsed: system prompt → user prompt → thinking / recorded rationale
-  → harness tool call → result / error → status, then the next call. Identical consecutive
+  → tool call → result / error → status, then the next call. Identical consecutive
   request messages are reused; changed prompts appear at their actual position.
   Provider thinking appears only when stored; absent thinking rows are omitted,
   and rationale remains separate assistant output. Row sizes count UTF-8 bytes of the
   displayed content, not tokens. Expand a row for its content and source-call link.
   The selected call is marked at the left. Raw transcript at the bottom retains every
   complete source call, including repeated prompts and metadata. Recorded status is
-  never inferred from feedback. Harness operations are labeled as harness actions.
+  never inferred from feedback. Rejected actions include their recorded errors.
 - **Event JSON:** the selected normalized event, its evidence, and its sanitized source
   call when available. The existing download control uses the same sanitized evidence.
 
@@ -228,6 +266,7 @@ This flag confirms review for local packaging; deployment still requires your ap
 ```bash
 uv run python -m pytest -q tests/viewer
 node research_site/model.test.mjs
+node research_site/blog.test.mjs
 node --check research_site/app.js
 ```
 

@@ -141,7 +141,7 @@ def test_game4_turn14_contract_surfaces_limited_depth_comparison():
     assert session["nodes_used"] <= 6000
 
 
-@pytest.mark.parametrize("archived_recorder", [False, True])
+@pytest.mark.parametrize("archived_recorder", [False, "run", "game"])
 def test_contract_grounding_commit_and_replay_provenance(monkeypatch, tmp_path, patched_app_source, archived_recorder):
     tmp_path = tmp_path / "game_1"
     tmp_path.mkdir()
@@ -175,9 +175,13 @@ def test_contract_grounding_commit_and_replay_provenance(monkeypatch, tmp_path, 
         del manifest["source_sha256"]["scripts/record_chess_game.py"]
         manifest["source_sha256"]["record_game.py"] = hashlib.sha256(recorder).hexdigest()
         manifest_path.write_text(json.dumps(manifest))
-        archive = tmp_path.parent / "source-snapshot/record_game.py"
+        archive = (tmp_path if archived_recorder == "game" else tmp_path.parent) / "source-snapshot/record_game.py"
         archive.parent.mkdir()
         archive.write_bytes(recorder)
+        if archived_recorder == "game":
+            run_archive = tmp_path.parent / "source-snapshot/record_game.py"
+            run_archive.parent.mkdir()
+            run_archive.write_bytes(b"different run snapshot")
         assert verify(tmp_path/"result.json", REPO/"artifacts/fix.patch")["validated"]
         archive.write_bytes(b"tampered recorder")
         with pytest.raises(ValueError, match="Source changed without matching snapshot"):

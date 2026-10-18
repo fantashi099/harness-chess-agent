@@ -1,4 +1,4 @@
-import {readSelection, selectionHash, resolveEvent, squaresFromFen, resolveRun, traceTurns, turnSteps, navigateTurn, recordedOutcome, turnEvidence, recordedMoves, lastMovesByColor} from './model.js?v=24';
+import {readSelection, selectionHash, resolveEvent, squaresFromFen, resolveRun, traceTurns, turnSteps, navigateTurn, recordedOutcome, turnEvidence, recordedMoves, lastMovesByColor, benchmarkRun, resultCounts} from './model.js?v=28';
 
 const $ = id => document.getElementById(id);
 const cache = new Map();
@@ -24,9 +24,11 @@ function option(value, text) {
   node.value = value;
   return node;
 }
+const modeLabels = {harness:'LLM + Tools', search:'Tools Only'};
 const outcome = game => game.completed === true ? ({'1-0':'White win','0-1':'White loss','1/2-1/2':'Draw'}[game.outcome] ?? 'Complete · outcome unavailable') : game.completed === false ? 'Incomplete' : 'Completion unavailable';
 
 let catalog, run, game, gameSummary, selected, base, payload;
+const benchmarks = new Map();
 let traceMode = 'react', flipped = false, routeGeneration = 0, traceGeneration = 0;
 let playing = false, playTimer;
 let recordedPlies = [], boardState = null, boardAnimationGeneration = 0, boardAnimations = [];
@@ -73,7 +75,7 @@ function renderTimeline(center = false) {
     button.append(el('strong', '', `Turn ${turn.turn ?? 'unknown'}`));
     const moves = turn.events.filter(e => ['commit','opponent','move'].includes(e.type) && e.move).map(e => e.move);
     if (moves.length) button.append(el('span', 'turn-moves', moves.join(' · ')));
-    button.append(el('small', '', active ? selected.title : `${turn.calls.length} calls · ${turn.events.length} events`));
+    button.append(el('small', '', active ? selected.title : `${run.configuration.policy === 'search' ? modeLabels.search : `${turn.calls.length} calls`} · ${turn.events.length} events`));
     button.addEventListener('click', () => selectEvent(turn === turns.at(-1) && events.length === turn.events.length ? turn.events.at(-1) : events[0]));
     const details = el('details', 'turn-events');
     const key = `${base}:${turn.turn}`;
@@ -188,11 +190,15 @@ function renderBoard() {
   $('board').setAttribute('aria-label', selected?.fen ? `${selected.board_phase}. ${description}` : 'Chess position unavailable');
   $('fen-value').textContent = selected?.fen ?? 'Unavailable';
   const {verification, search, chosenMove} = turnEvidence(game.events, selected?.turn);
-  const b = verification?.budget ?? {};
+  const budgetEvent = run.configuration.policy === 'search' ? search : verification;
+  const phase = run.configuration.policy === 'search' ? 'search' : 'verification';
+  const b = budgetEvent?.budget ?? {};
+  $('budget-phase').textContent = `AFTER ${phase.toUpperCase()}`;
   const used = b.nodes_used ?? (b.max_nodes != null && b.remaining_nodes != null ? b.max_nodes - b.remaining_nodes : null);
   $('budget-value').replaceChildren(document.createTextNode(used == null ? 'Unavailable' : fmt(used)), el('small', '', b.max_nodes != null ? ` / ${fmt(b.max_nodes)} nodes` : ''));
   $('budget-fill').style.width = b.max_nodes && used != null ? `${Math.max(0, Math.min(100, used/b.max_nodes*100))}%` : '0%';
-  $('budget-note').textContent = verification ? `After verification · ${b.remaining_nodes != null ? `${fmt(b.remaining_nodes)} nodes remaining` : 'Remaining nodes unavailable'} · ${verification.source.file}:${verification.source.location}` : 'No verification feedback recorded for this turn.';
+  const remaining = b.remaining_nodes ?? (b.max_nodes != null && used != null ? b.max_nodes-used : null);
+  $('budget-note').textContent = budgetEvent ? `After ${phase} · ${remaining != null ? `${fmt(remaining)} nodes remaining` : 'Remaining nodes unavailable'} · ${budgetEvent.source.file}:${budgetEvent.source.location}` : `No ${phase} feedback recorded for this turn.`;
   const candidates = search?.candidates ?? [];
   $('candidates').replaceChildren(...candidates.map(c => {
     const chosen = c.move === chosenMove;
@@ -206,7 +212,7 @@ function renderBoard() {
   }));
   if (search) {
     const a = search.analysis ?? {};
-    $('candidates').prepend(el('p', '', `Search feedback · completed depth ${a.completed_depth ?? 'unavailable'} · scope ${Array.isArray(a.candidate_scope) ? a.candidate_scope.join(', ') : a.candidate_scope ?? 'unavailable'} · ${search.source.file}:${search.source.location}`));
+    $('candidates').prepend(el('p', '', `Search feedback · completed depth ${a.completed_depth ?? 'unavailable'} · scope ${Array.isArray(a.candidate_scope) ? a.candidate_scope.join(', ') : a.candidate_scope ?? a.score_scope ?? 'unavailable'} · ${search.source.file}:${search.source.location}`));
   } else $('candidates').append(el('p', '', 'No search candidate table recorded for this turn.'));
   if (chosenMove && !candidates.some(c => c.move === chosenMove)) {
     $('candidates').prepend(el('p', 'chosen-note', `Chosen move: ${chosenMove} · ${search ? 'not listed in this search shortlist' : 'search evidence unavailable'}`));
@@ -222,7 +228,7 @@ function renderBoard() {
   const result = recordedOutcome(gameSummary, finalTurn);
   $('board-result').hidden = result == null;
   $('board-result').dataset.result = result ?? '';
-  $('board-result').replaceChildren(...(result ? [el('strong', '', result), el('span', '', `LLM agent · White · ${gameSummary.outcome}`)] : []));
+  $('board-result').replaceChildren(...(result ? [el('strong', '', result), el('span', '', `${modeLabels[run.configuration.policy] ?? 'LLM agent'} · White · ${gameSummary.outcome}`)] : []));
 
 }
 
@@ -280,6 +286,13 @@ function compactTurnRows(results, turn, current) {
 
 async function renderTurn(container, turn, current, resourceBase, generation) {
   container.replaceChildren(el('p', 'muted', 'Loading recorded calls…'));
+  if (run.configuration.policy === 'search') {
+    const results = await Promise.allSettled(turn.events.filter(event => ['tool_result','verification'].includes(event.type)).map(event => sourceEvidence(event, resourceBase)));
+    if (generation !== traceGeneration) return;
+    container.replaceChildren(...results.map(result => result.status === 'fulfilled' ? block('Search result', result.value.data.evidence) : el('p','muted',result.reason.message)));
+    if (!results.length) container.append(el('p','muted','No search feedback recorded for this turn. See Event JSON for the recorded decision.'));
+    return;
+  }
   const results = await Promise.allSettled(turn.calls.map(call => sourceEvidence(call.events[0], resourceBase)));
   if (generation !== traceGeneration) return;
   const nodes = compactTurnRows(results, turn, current);
@@ -318,7 +331,7 @@ async function renderTrace() {
     const turns = traceTurns(game.events);
     const turn = turns.find(t => t.turn === current.turn);
     const body = el('div', 'react-turn-flow');
-    $('trace-body').replaceChildren(el('p', 'trace-caption', `${turn?.calls.length ?? 0} RECORDED CALLS · Unchanged prompts reused. Updated prompts shown in sequence. Selected call marked at left.`), body);
+    $('trace-body').replaceChildren(el('p', 'trace-caption', run.configuration.policy === 'search' ? 'TOOLS ONLY · Recorded candidate scores, budget and decision.' : `${turn?.calls.length ?? 0} RECORDED CALLS · Unchanged prompts reused. Updated prompts shown in sequence. Selected call marked at left.`), body);
     if (turn) await renderTurn(body, turn, current, resourceBase, generation);
     if (generation === traceGeneration) $('trace-body').scrollTop = 0;
   } catch (error) {
@@ -339,19 +352,22 @@ async function route() {
   const changed = game !== loadedGame;
   if (changed) setPlaying(false);
   run = loadedRun;game = loadedGame;gameSummary = summary;
-  if (changed) recordedPlies = recordedMoves(game.events);
+  if (changed) {recordedPlies = recordedMoves(game.events);document.querySelector('.board-scroll').scrollTop = 0;}
   base = `data/${summary.path.replace(/\/index\.json$/, '')}`;
   selected = resolveEvent(game.events, selection.event);
   status(game.warnings.join('; '));
   if (selection.event && selected?.id !== selection.event) status('Requested event unavailable; showing the first recorded event.');
   if (selected) history.replaceState(null, '', currentLink(selected));
-  $('run-select').value = run.id;
+  $('mode-select').value = run.policy ?? '';
+  $('elo-select').value = String(run.elo ?? summary.opponent?.elo ?? 1500);
+  renderComparison();
   $('game-select').replaceChildren(...run.games.map(g => option(g.id, `${g.id.replace('_', ' ')} · ${outcome(g)}`)));
   $('game-select').value = game.id;
   $('event-count').textContent = `${game.events.length} EVENTS`;
   $('opponent-name').textContent = summary.opponent?.name ?? 'Opponent unavailable';
   $('opponent-setting').textContent = `Elo setting ${summary.opponent?.elo ?? 'unavailable'} · ${summary.opponent?.move_time ?? '?'} s / move`;
-  $('model-name').textContent = summary.model ?? 'Model unavailable';
+  $('model-name').textContent = run.configuration.policy === 'search' ? modeLabels.search : summary.model ?? 'Model unavailable';
+  $('strategy-description').textContent = run.configuration.policy === 'search' ? 'Search tool selects the move automatically' : 'LLM directs analysis and chooses the move';
   if (changed) {
     $('event-filter').replaceChildren(option('', 'All events'), ...[...new Set(game.events.map(e => e.type))].map(t => option(t, t.replaceAll('_', ' '))));
   }
@@ -359,6 +375,27 @@ async function route() {
   if (playing && generation === routeGeneration) scheduleNextTurn();
 }
 
+function renderComparison() {
+  const nodes = [];
+  for (const policy of ['harness','search']) {
+    const entry = benchmarkRun(catalog, policy, $('elo-select').value);
+    const data = benchmarks.get(entry?.id);
+    if (!data) continue;
+    const counts = resultCounts(data.games);
+    const button = el('button', 'comparison-choice', `${modeLabels[policy]} · ${counts.wins}W / ${counts.draws}D / ${counts.losses + counts.incomplete}L${counts.unknown ? ` / ${counts.unknown} unknown` : ''}`);
+    button.setAttribute('aria-pressed', String(entry.id === run.id));
+    button.title = `${data.games.length} games · White results · ${entry.elo} Elo`;
+    button.addEventListener('click', () => switchBenchmark(policy, entry.elo));
+    nodes.push(button);
+  }
+  $('comparison').replaceChildren(...nodes);
+}
+function switchBenchmark(policy, elo) {
+  const entry = benchmarkRun(catalog, policy, elo);
+  if (!entry) return;
+  setPlaying(false);
+  location.hash = selectionHash(entry.id, game?.id ?? '', '');
+}
 function setupViewer() {
   const helpTrigger = $('budget-help-trigger'), help = $('budget-help');
   let helpHideTimer;
@@ -388,8 +425,9 @@ function setupViewer() {
   help.addEventListener('toggle',() => helpTrigger.setAttribute('aria-expanded',String(help.matches(':popover-open'))));
   document.querySelector('.board-scroll').addEventListener('scroll',hideBudgetHelp);
   window.addEventListener('resize',hideBudgetHelp);
-  $('run-select').replaceChildren(...catalog.runs.map(r => option(r.id, r.title)));
-  $('run-select').addEventListener('change', () => {setPlaying(false);location.hash = selectionHash($('run-select').value, '', '');});
+  $('mode-select').disabled = $('elo-select').disabled = !benchmarks.size;
+  $('mode-select').addEventListener('change', () => switchBenchmark($('mode-select').value, $('elo-select').value));
+  $('elo-select').addEventListener('change', () => switchBenchmark($('mode-select').value || 'harness', $('elo-select').value));
   $('game-select').addEventListener('change', () => {setPlaying(false);location.hash = selectionHash(run.id, $('game-select').value, '');});
   $('event-filter').addEventListener('change', () => renderTimeline());
   $('first-event').addEventListener('click', () => navigate(-game.events.length));
@@ -416,9 +454,6 @@ function setupViewer() {
       traceTabs[next].focus();traceTabs[next].click();
     });
   });
-  $('copy-link').addEventListener('click', async () => {
-    try {await navigator.clipboard.writeText(location.href);status('Event link copied.');} catch {status(`Copy the address bar to share this event: ${location.hash}`);}
-  });
   $('download-event').addEventListener('click', async () => {
     if (!payload || !selected) return;
     const current = selected;
@@ -426,18 +461,12 @@ function setupViewer() {
     const url = URL.createObjectURL(new Blob([JSON.stringify({event:current, sanitized_source:raw}, null, 2)], {type:'application/json'}));
     const a = el('a');a.href = url;a.download = `${current.id}.json`;a.click();setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
-  $('show-metadata').addEventListener('click', async () => {
-    $('metadata-content').textContent = 'Loading…';$('metadata-dialog').showModal();
-    try {const metadata = await json(`${base}/metadata.json`);$('metadata-content').textContent = pretty({run:run.id,source_directory:run.source_directory,configuration:run.configuration, game:gameSummary, manifest:metadata.manifest, source_snapshot:metadata.source_snapshot, artifact_sha256:metadata.artifact_sha256, source_snapshot_reference:metadata.source_snapshot_reference, availability:{absolute_event_timestamps:'unavailable', monetary_cost:'unavailable', memory_used:gameSummary.memory_used ?? 'unavailable'}});}
-    catch (error) {$('metadata-content').textContent = error.message;}
-  });
-  $('close-metadata').addEventListener('click', () => $('metadata-dialog').close());
   document.querySelectorAll('[data-panel]').forEach(button => button.addEventListener('click', () => {
     $('workspace').dataset.mobile = button.dataset.panel;
     document.querySelectorAll('[data-panel]').forEach(tab => tab.setAttribute('aria-selected', String(tab === button)));
   }));
   document.addEventListener('keydown', event => {
-    if (!game || $('metadata-dialog').open || event.target.closest('input,select,textarea,button,summary,[role=separator]')) return;
+    if (!game || event.target.closest('input,select,textarea,button,summary,[role=separator]')) return;
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {event.preventDefault();navigate(event.key === 'ArrowRight' ? 1 : -1);}
   });
   document.querySelectorAll('.resizer').forEach(handle => {
@@ -468,6 +497,7 @@ function setupViewer() {
 try {
   catalog = await json('data/manifest.json');
   if (catalog.schema_version !== 1) throw new Error('Unsupported dataset version.');
+  await Promise.all(catalog.runs.filter(r => r.collection === 'benchmark-report').map(async r => benchmarks.set(r.id, await json(`data/${r.path}`))));
   setupViewer();await route();
 } catch (error) {
   status(error.message);

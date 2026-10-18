@@ -15,6 +15,19 @@ export function resolveRun(catalog, id) {
   return catalog.runs.find(r => r.id === id) ?? catalog.runs.find(r => r.id === catalog.default_run) ?? catalog.runs[0];
 }
 
+export function benchmarkRun(catalog, policy, elo) {
+  return catalog.runs.find(r => r.collection === 'benchmark-report' && r.policy === policy && r.elo === Number(elo));
+}
+
+export function resultCounts(games) {
+  const counts = {wins:0, draws:0, losses:0, incomplete:0, unknown:0};
+  for (const game of games) {
+    const key = game.completed === true ? ({'1-0':'wins','0-1':'losses','1/2-1/2':'draws'}[game.outcome] ?? 'unknown') : game.completed === false ? 'incomplete' : 'unknown';
+    counts[key]++;
+  }
+  return counts;
+}
+
 export function traceTurns(events) {
   const turns = new Map();
   for (const event of events) {
@@ -48,7 +61,7 @@ export function turnEvidence(events, turn) {
   const entries = events.filter(event => event.turn === turn);
   return {
     verification: entries.findLast(event => event.type === 'verification') ?? null,
-    search: entries.findLast(event => event.type === 'tool_result' && event.candidates?.length) ?? null,
+    search: entries.findLast(event => event.type === 'tool_result' && (event.candidates?.length || event.title === 'Search result')) ?? null,
     chosenMove: entries.findLast(event => event.type === 'commit' && event.move)?.move ?? null,
   };
 }
@@ -107,7 +120,7 @@ export function recordSteps(record) {
   if (record.action) steps.push({type:'tool_call', label:`Tool call · ${record.action.action ?? 'action'}`, value:record.action});
   if (record.execution_feedback != null) steps.push({type:'tool_result', label:'Tool result', value:record.execution_feedback});
   if (record.committed_move) steps.push({type:'commit', label:'Tool result', value:{committed_move:record.committed_move}});
-  if (record.error != null || record.status === 'rejected') steps.push({type:'error', label:'Harness error / rejection', value:{status:record.status,error:record.error ?? 'Error detail unavailable'}});
+  if (record.error != null || record.status === 'rejected') steps.push({type:'error', label:'Action error / rejection', value:{status:record.status,error:record.error ?? 'Error detail unavailable'}});
   if (steps.length || record.status != null) steps.push({type:'status', label:'Status', value:{status:record.status ?? null, recovered_after_transport_error:record.recovered_after_transport_error ?? null}});
   return steps;
 }

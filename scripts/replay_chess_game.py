@@ -49,6 +49,8 @@ def verify(result_path, patch):
         if not source_path.is_file() or hashlib.sha256(source_path.read_bytes()).hexdigest() != digest:
             archive = result_path.parent.parent / "source-snapshot" / relative
             if not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+                archive = result_path.parent / "source-snapshot" / relative
+            if not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
                 raise ValueError(f"Source changed without matching snapshot: {relative}")
             if (is_search or is_harness) and relative=="src/assignment/agent/chess_policy_search.py":
                 spec=importlib.util.spec_from_file_location("assignment.agent._recorded_search",archive)

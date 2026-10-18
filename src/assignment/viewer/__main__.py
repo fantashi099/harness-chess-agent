@@ -33,7 +33,8 @@ def import_run(source, output, run_id=None, games=None, make_default=False):
     run_id = run_id or source.name
     if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
         raise ValueError("Run ID must contain only letters, numbers, underscores and hyphens")
-    directories = sorted(p for p in source.glob("game_*") if p.is_dir())
+    directories = sorted((p for p in source.glob("game_*") if p.is_dir()),
+                         key=lambda p: (int(p.name[5:]) if p.name[5:].isdigit() else float("inf"), p.name))
     if not directories:
         directories = [source]
     if games:
@@ -115,6 +116,53 @@ def import_run(source, output, run_id=None, games=None, make_default=False):
     return run
 
 
+def import_benchmark(source, output, make_default=False):
+    """Import the four immediate gameplay groups, excluding archived source copies."""
+    source, output = Path(source).resolve(), Path(output).resolve()
+    groups = [(elo, policy, source / f"stockfish-{elo}" / policy)
+              for elo in (1500, 2000) for policy in ("harness", "search")]
+    for elo, policy, directory in groups:
+        config = read_json(directory / "experiment-config.json", {})
+        if config.get("policy") != policy or config.get("opponent", {}).get("elo") != elo:
+            raise ValueError(f"Missing or mismatched benchmark group: stockfish-{elo}/{policy}")
+    catalog = read_json(output / "manifest.json", dict(schema_version=SCHEMA_VERSION, runs=[]))
+    if catalog.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError("Unsupported catalog schema version")
+    ids = [f"benchmark-report-{elo}-{policy}" for elo, policy, _ in groups]
+    if any((output / "runs" / run_id).exists() or any(r["id"] == run_id for r in catalog["runs"]) for run_id in ids):
+        raise ValueError("Benchmark already imported; existing links are preserved")
+    if output == source or output.is_relative_to(source) or source.is_relative_to(output):
+        raise ValueError("Source and export directories must be separate")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    moved = []
+    with tempfile.TemporaryDirectory(dir=output.parent) as staging:
+        runs, entries = [], []
+        for (elo, policy, directory), run_id in zip(groups, ids):
+            run = import_run(directory, staging, run_id)
+            run.update(title=f"{policy.title()} · {elo} Elo", collection="benchmark-report",
+                       policy=policy, elo=elo, source_directory=f"{source.name}/stockfish-{elo}/{policy}",
+                       selection=read_json(directory / "selection.json"))
+            write_json(Path(staging) / "runs" / run_id / "manifest.json", run)
+            entries.append({k: run[k] for k in ("id", "title", "collection", "policy", "elo")})
+            entries[-1].update(path=f"runs/{run_id}/manifest.json")
+            runs.append(run)
+        try:
+            (output / "runs").mkdir(parents=True, exist_ok=True)
+            for run_id in ids:
+                target = output / "runs" / run_id
+                shutil.move(str(Path(staging) / "runs" / run_id), target)
+                moved.append(target)
+            catalog["runs"].extend(entries)
+            if make_default:
+                catalog["default_run"] = ids[0]
+            write_json(output / "manifest.json", catalog)
+        except Exception:
+            for target in moved:
+                shutil.rmtree(target)
+            raise
+    return runs
+
+
 def export_reviewed(site, destination):
     site, destination = Path(site).resolve(), Path(destination).resolve()
     if destination.exists():
@@ -125,7 +173,7 @@ def export_reviewed(site, destination):
         raise ValueError("Import a dataset before preparing an export")
     # Only known browser assets and the sanitized dataset enter the publication package.
     destination.mkdir(parents=True)
-    for name in ("index.html", "viewer.html", "styles.css", "app.js", "model.js", "data"):
+    for name in ("index.html", "viewer.html", "styles.css", "shared.css", "blog.css", "app.js", "model.js", "blog.js", "navigation.js", "data"):
         path = site / name
         if path.is_symlink() or any(p.is_symlink() for p in path.rglob("*") if path.is_dir()):
             raise ValueError("Symlinks are not allowed in public exports")
@@ -143,6 +191,10 @@ def main():
     ingest.add_argument("--run-id")
     ingest.add_argument("--games", nargs="+")
     ingest.add_argument("--default", action="store_true", help="Select this run when opening the viewer without a run link")
+    benchmark = commands.add_parser("benchmark", help="Import benchmark-report's Search/Harness × 1500/2000 groups")
+    benchmark.add_argument("source", type=Path)
+    benchmark.add_argument("--output", type=Path, default=Path("research_site/data"))
+    benchmark.add_argument("--default", action="store_true")
     publish = commands.add_parser("export")
     publish.add_argument("--site", type=Path, default=Path("research_site"))
     publish.add_argument("--output", type=Path, required=True)
@@ -152,6 +204,9 @@ def main():
         if args.command == "import":
             run = import_run(args.source, args.output, args.run_id, args.games, args.default)
             print(f"Imported {len(run['games'])} game(s) as {run['id']}. Public export still requires manual review.")
+        elif args.command == "benchmark":
+            runs = import_benchmark(args.source, args.output, args.default)
+            print(f"Imported {sum(len(run['games']) for run in runs)} games across {len(runs)} benchmark groups. Nothing uploaded.")
         else:
             if not args.reviewed:
                 parser.error("Review the sanitized data, raw views and metadata, then pass --reviewed. Nothing is uploaded.")

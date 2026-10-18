@@ -176,6 +176,13 @@ def load_game(directory: Path):
             line, decision = decision_pair
             turn = chess.Board(root).fullmove_number if root else turn_index
             if not group["records"]:
+                if not decision.get("analysis_trace") and (decision.get("top_candidates") or decision.get("search_performed")):
+                    add("tool_result", "Search result", "decisions.jsonl", f"{line}.search",
+                        dict(decision=decision), fen=root, turn=turn,
+                        candidates=decision.get("top_candidates"),
+                        analysis={k: decision.get(k) for k in ("completed_depth", "score_scope")},
+                        budget=dict(max_nodes=decision.get("max_nodes") or manifest.get("max_nodes"),
+                                    nodes_used=decision.get("nodes_used")))
                 for i, analysis in enumerate(decision.get("analysis_trace") or []):
                     evidence = analysis.get("evidence") or {}
                     add("verification" if analysis.get("verification") else "tool_result",

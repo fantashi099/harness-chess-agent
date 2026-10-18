@@ -7,7 +7,7 @@ from pathlib import Path
 import chess
 import pytest
 
-from assignment.viewer.__main__ import export_reviewed, import_run
+from assignment.viewer.__main__ import export_reviewed, import_run, import_benchmark
 from assignment.viewer.adapters import advance, load_game
 from assignment.viewer.sanitize import sanitize
 
@@ -188,7 +188,7 @@ def test_recorded_fields_survive_sanitizing():
 def test_export_only_browser_files(tmp_path):
     site = tmp_path / "site"
     site.mkdir()
-    for name in ["index.html", "viewer.html", "styles.css", "app.js", "model.js"]:
+    for name in ["index.html", "viewer.html", "styles.css", "shared.css", "blog.css", "app.js", "model.js", "blog.js", "navigation.js"]:
         (site / name).write_text("synthetic asset")
     dump(site / "data/manifest.json", dict(schema_version=1, runs=[]))
     (site / ".env").write_text("NEVER_PUBLIC")
@@ -196,7 +196,7 @@ def test_export_only_browser_files(tmp_path):
     dest = tmp_path / "reviewed"
     hashes = export_reviewed(site, dest)
     assert ".env" not in hashes and "README.md" not in hashes
-    assert set(hashes) == {"index.html", "viewer.html", "styles.css", "app.js", "model.js", "data/manifest.json"}
+    assert set(hashes) == {"index.html", "viewer.html", "styles.css", "shared.css", "blog.css", "app.js", "model.js", "blog.js", "navigation.js", "data/manifest.json"}
 
 
 def test_no_supported_files_or_bad_id(tmp_path):
@@ -206,3 +206,60 @@ def test_no_supported_files_or_bad_id(tmp_path):
         import_run(empty, tmp_path / "output")
     with pytest.raises(ValueError, match="Run ID"):
         import_run(empty, tmp_path / "output", run_id="../escape")
+
+
+def test_pure_search_keeps_root_candidates_budget_and_raw_decision(tmp_path):
+    _, directory = fixture_run(tmp_path)
+    (directory / "harness-trace.jsonl").unlink()
+    decision = json.loads((directory / "decisions.jsonl").read_text())
+    decision.update(search_performed=True, max_nodes=100, completed_depth=4,
+                    top_candidates=[dict(move="e2e4", primary_score=52, pv=["e2e4"])],
+                    reason="SYNTHETIC SEARCH REASON", unknown_field=True)
+    (directory / "decisions.jsonl").write_text(json.dumps(decision))
+    game, payloads = load_game(directory)
+    assert [event["type"] for event in game["events"]] == ["tool_result", "commit", "opponent"]
+    search = game["events"][0]
+    assert search["fen"] == chess.STARTING_FEN
+    assert search["budget"] == dict(max_nodes=100, nodes_used=30)
+    assert search["analysis"]["completed_depth"] == 4
+    assert search["candidates"] == decision["top_candidates"]
+    assert payloads[search["id"]]["evidence"]["decision"] == decision
+
+
+def test_benchmark_groups_order_selection_and_atomic_failure(tmp_path):
+    root = tmp_path / "benchmark-report"
+    output = tmp_path / "viewer-data"
+    old, _ = fixture_run(tmp_path, "existing")
+    import_run(old, output, make_default=True)
+    for elo in (1500, 2000):
+        for policy in ("search", "harness"):
+            source, directory = fixture_run(root / f"stockfish-{elo}", policy)
+            dump(source / "experiment-config.json", dict(policy=policy, opponent=dict(elo=elo)))
+            for number in (2, 10):
+                game_dir = source / f"game_{number}"
+                dump(game_dir / "result.json", dict(completed=True, replay_result="1-0"))
+            # Nested archives are not additional games.
+            dump(source / "sources/old/game_99/result.json", dict(completed=True))
+    curated = root / "stockfish-2000/harness"
+    dump(curated / "selection.json", dict(random_sample=False, note="SYNTHETIC SELECTION"))
+    bad = curated / "game_2/result.json"
+    original = bad.read_text()
+    bad.write_text("invalid json")
+    before = (output / "manifest.json").read_bytes()
+    with pytest.raises(ValueError):
+        import_benchmark(root, output, True)
+    assert (output / "manifest.json").read_bytes() == before
+    assert sorted(p.name for p in (output / "runs").iterdir()) == ["existing"]
+    bad.write_text(original)
+    runs = import_benchmark(root, output, True)
+    assert len(runs) == 4
+    assert all([game["id"] for game in run["games"]] == ["game_1", "game_2", "game_10"] for run in runs)
+    curated_run = next(run for run in runs if run["id"] == "benchmark-report-2000-harness")
+    assert curated_run["selection"]["random_sample"] is False
+    assert curated_run["source_directory"] == "benchmark-report/stockfish-2000/harness"
+    catalog = json.loads((output / "manifest.json").read_text())
+    assert len(catalog["runs"]) == 5
+    assert catalog["default_run"] == "benchmark-report-1500-harness"
+    assert [(entry["policy"], entry["elo"]) for entry in catalog["runs"][1:]] == [("harness",1500),("search",1500),("harness",2000),("search",2000)]
+    with pytest.raises(ValueError, match="already imported"):
+        import_benchmark(root, output)

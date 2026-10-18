@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {readSelection, selectionHash, resolveEvent, squaresFromFen, resolveRun, traceTurns, recordSteps, turnSteps, navigateTurn, recordedOutcome, turnEvidence, recordedMoves, lastMovesByColor} from './model.js';
+import {readSelection, selectionHash, resolveEvent, squaresFromFen, resolveRun, traceTurns, recordSteps, turnSteps, navigateTurn, recordedOutcome, turnEvidence, recordedMoves, lastMovesByColor, benchmarkRun, resultCounts} from './model.js';
 
 const hash = selectionHash('original-r13', 'game_4', 'harness-trace-jsonl-2-verification');
 assert.deepEqual(readSelection(hash), {run:'original-r13', game:'game_4', event:'harness-trace-jsonl-2-verification'});
@@ -126,3 +126,11 @@ assert.equal(turnSteps([firstCall,null,firstCall]).filter(row=>row.type==='conte
 assert.deepEqual(turnSteps([]),[]);
 assert.deepEqual(firstCall.request,prompt);
 console.log('Viewer model checks passed (links, defaults, board, ordered calls, transcripts, missing thinking).');
+
+const benchmarkCatalog = {runs:[{id:'legacy'},{id:'s15',collection:'benchmark-report',policy:'search',elo:1500},{id:'h20',collection:'benchmark-report',policy:'harness',elo:2000}]};
+assert.equal(benchmarkRun(benchmarkCatalog,'search','1500').id,'s15');
+assert.equal(benchmarkRun(benchmarkCatalog,'harness',2000).id,'h20');
+assert.equal(benchmarkRun(benchmarkCatalog,'harness',1500),undefined);
+assert.deepEqual(resultCounts([{completed:true,outcome:'1-0'},{completed:true,outcome:'0-1'},{completed:true,outcome:'1/2-1/2'},{completed:false,outcome:'0-1'},{completed:true,outcome:'*'},{}]),{wins:1,draws:1,losses:1,incomplete:1,unknown:2});
+assert.deepEqual(resultCounts([]),{wins:0,draws:0,losses:0,incomplete:0,unknown:0});
+assert.equal(turnEvidence([{turn:1,type:'tool_result',title:'Search result',candidates:[],budget:{nodes_used:50}}],1).search.budget.nodes_used,50);
