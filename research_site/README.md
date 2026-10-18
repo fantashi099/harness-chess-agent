@@ -8,8 +8,8 @@ There is no blog, backend, model call or engine execution on this website.
 Public site: https://chess-trajectories.theperfectname.chatgpt.site
 
 The unfinished blog and its related code are preserved in branch
-`codex/chess-blog-snapshot`, commit `0264778`. Continue it there when ready.
-The standalone website lives on `codex/chess-trajectories`.
+`tmp/chess-blog-snapshot`, commit `0264778`. Continue it there when ready.
+The standalone website lives on `feat/chess-trajectories`.
 
 ## Run locally
 
