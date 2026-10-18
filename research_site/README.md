@@ -5,7 +5,9 @@ each against Stockfish at 1500 and 2000 Elo, with 10 games in each group.
 The root page is the trajectory viewer: selectors, timeline, board and trace inspector.
 There is no blog, backend, model call or engine execution on this website.
 
-Public site: https://chess-trajectories.theperfectname.chatgpt.site
+Public site: https://fantashi099.github.io/chess-trajectories/
+
+Published repository: https://github.com/fantashi099/chess-trajectories
 
 The unfinished blog and its related code are preserved in branch
 `tmp/chess-blog-snapshot`, commit `0264778`. Continue it there when ready.
@@ -50,7 +52,7 @@ not hypothetical principal variations. Per-call durations are not timestamps.
 ## Export and publish
 
 ```bash
-uv run python -m assignment.viewer export --output .private/chess-trajectories/dist --reviewed
+uv run python -m assignment.viewer export --output .private/chess-trajectories-export --reviewed
 ```
 
 Review the sanitized dataset before export. The export allowlist contains only
@@ -61,9 +63,14 @@ No blog, environment file, original artifact, source snapshot or server code is
 published. The importer redacts secrets, credentials, personal identifiers, URLs
 and local filesystem paths, including JSON embedded in transcripts.
 
-The Sites publishing checkout is `.private/chess-trajectories`. Its
-`.openai/hosting.json` retains the Site identity and serves `dist/` as static files.
-Source synchronization and deployment use the Sites workflow helper.
+The GitHub Pages publishing checkout is `.private/github-chess-trajectories`,
+a separate repository containing only public browser assets and sanitized data.
+Pages serves the root of its `main` branch; `.nojekyll` disables Jekyll. All URLs
+are relative so the viewer works under `/chess-trajectories/`. Copy a reviewed
+export into that checkout, retaining `.git`, `.nojekyll` and its public README,
+then commit and push to publish updates. Choose a fresh export destination.
+
+The previous Sites checkout remains at `.private/chess-trajectories` as a backup.
 
 ## Checks
 
