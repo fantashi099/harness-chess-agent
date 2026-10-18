@@ -188,15 +188,17 @@ def test_recorded_fields_survive_sanitizing():
 def test_export_only_browser_files(tmp_path):
     site = tmp_path / "site"
     site.mkdir()
-    for name in ["index.html", "viewer.html", "styles.css", "shared.css", "blog.css", "app.js", "model.js", "blog.js", "navigation.js"]:
+    for name in ["index.html", "viewer.html", "styles.css", "app.js", "model.js"]:
         (site / name).write_text("synthetic asset")
     dump(site / "data/manifest.json", dict(schema_version=1, runs=[]))
+    (site / "blog.js").write_text("ARCHIVED_BLOG_ONLY")
+    (site / "blog.css").write_text("ARCHIVED_BLOG_ONLY")
     (site / ".env").write_text("NEVER_PUBLIC")
     (site / "README.md").write_text("NEVER_PUBLIC")
     dest = tmp_path / "reviewed"
     hashes = export_reviewed(site, dest)
     assert ".env" not in hashes and "README.md" not in hashes
-    assert set(hashes) == {"index.html", "viewer.html", "styles.css", "shared.css", "blog.css", "app.js", "model.js", "blog.js", "navigation.js", "data/manifest.json"}
+    assert set(hashes) == {"index.html", "viewer.html", "styles.css", "app.js", "model.js", "data/manifest.json"}
 
 
 def test_no_supported_files_or_bad_id(tmp_path):

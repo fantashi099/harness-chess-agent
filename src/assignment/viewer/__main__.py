@@ -173,7 +173,7 @@ def export_reviewed(site, destination):
         raise ValueError("Import a dataset before preparing an export")
     # Only known browser assets and the sanitized dataset enter the publication package.
     destination.mkdir(parents=True)
-    for name in ("index.html", "viewer.html", "styles.css", "shared.css", "blog.css", "app.js", "model.js", "blog.js", "navigation.js", "data"):
+    for name in ("index.html", "viewer.html", "styles.css", "app.js", "model.js", "data"):
         path = site / name
         if path.is_symlink() or any(p.is_symlink() for p in path.rglob("*") if path.is_dir()):
             raise ValueError("Symlinks are not allowed in public exports")
