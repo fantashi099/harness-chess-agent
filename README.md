@@ -1,9 +1,57 @@
-# Agent Harness: Coding and Chess
+# Chess Agent Harness: CMU Assignment Extension
 
-An implementation of Carnegie Mellon University's 11-768 Assignment 1, with
-optional chess policy and Stockfish extensions. Original requirements and
-submission instructions are preserved in [ASSIGNMENT.md](ASSIGNMENT.md).
-The extensions are personal experiments, not official course requirements.
+> Shout-out to **Weiwei Sun, Saujas Vaduguru, and the Carnegie Mellon University
+> 11-768 course staff** for creating the original agent-harness assignment and
+> chess project that made this work possible. Full acknowledgments are below.
+
+This project extends CMU's Assignment 1 to improve a chess-playing agent and
+evaluate it against **Stockfish** at different Elo settings, alongside the
+original minimax opponent. It explores how an LLM can use bounded search,
+tactical verification, and structured feedback to choose better moves.
+Improvement is the experimental goal; a higher win rate must be established
+through benchmarks.
+
+The original coding-agent workflow is also retained: a shared ReAct agent loop
+supports terminal tools, context compaction, and repairing the chess app before
+playing it. Original requirements and submission instructions are preserved in
+[ASSIGNMENT.md](ASSIGNMENT.md). The chess extensions are personal experiments,
+not official CMU course requirements.
+
+## How the chess harness works
+
+The harness combines an LLM planner with Python search and an executor that
+checks actions before applying them. White is the agent; Black is Stockfish or
+the original minimax bot.
+
+1. **Observe:** the LLM receives the current board, legal moves, recent history,
+   remaining budget, and feedback from previous analyses at this position.
+2. **Analyze:** it requests a broad search over legal moves, then focuses on
+   individual candidates. The search uses iterative-deepening alpha-beta,
+   quiescence, and a positional evaluator covering material, development,
+   king safety, mobility, and pawn structure.
+3. **Verify:** single-candidate analysis checks Black's replies and performs
+   bounded mate probes. Feedback includes completed depth, score bounds,
+   principal variations, and tactical refutations. These checks do not prove
+   general safety.
+4. **Commit:** the LLM explicitly chooses an analyzed move through structured
+   JSON. The executor checks legality, verification requirements, and budgets;
+   incomplete verification or known refutations require eligible explicit risk
+   acceptance. It does not silently substitute a move.
+5. **Record:** the runner saves decisions, model traces, source snapshots, game
+   results, and replay reports so each experiment can be inspected offline.
+
+By default, each White turn shares a **6,000-node budget** across search and
+safety probes, with a maximum main-search depth of **4 plies**, at most four
+analyses, and eight LLM calls including rejected actions. Nodes are not a fresh
+allowance for every tool call. Quiescence can extend beyond the main-search depth.
+
+| Component | Responsibility |
+| --- | --- |
+| `src/assignment/agent/chess_agent.py` | Connects the agent to chess tools |
+| `src/assignment/agent/chess_harness.py` | Builds model requests and action schemas |
+| `src/assignment/agent/chess_policy_harness.py` | Enforces the analysis and commit protocol |
+| `src/assignment/agent/chess_policy_search.py` | Implements search and position evaluation |
+| `experiments/chess/evaluate_search_policy.py` | Orchestrates benchmark batches in Modal |
 
 ## Setup
 
@@ -19,35 +67,59 @@ Configure the model endpoint, API key and model in `.env`. Keep credentials out
 of Git. Run `make doctor` to check source revisions and service configuration.
 Modal sandboxes and model calls consume credits; offline tests do not.
 
-## Run agents
+## Run benchmarks
 
-Generate and check the Part 1 patch, then play against the default minimax opponent:
+Choose how White selects its moves:
+
+| `--policy` | Final move authority | Model calls |
+| --- | --- | --- |
+| `harness` | LLM requests analysis, reads feedback, and explicitly commits a move | Yes |
+| `search` | Search picks the best completed result | None |
+
+Both modes use the same search implementation and positional evaluator. The
+examples use a 6,000-node ceiling and maximum main-search depth of 4 plies.
+`harness` is the default policy. Use a fresh output directory for each batch.
+
+### Harness against Stockfish
+
+After setup, run a harness batch against Stockfish Elo 2000:
 
 ```bash
-make run-code-agent
-make check-part1
-make run-chess-agent
+BATCH="artifacts/assignment2/benchmark-$(date +%Y%m%d-%H%M%S)"
+MODEL="deepseek/deepseek-v4.1-flash"
+
+uv run python -m experiments.chess.evaluate_search_policy \
+  --policy harness --opponent stockfish --stockfish-elo 2000 \
+  --model "$MODEL" --games 5 --steps 200 \
+  --max-nodes 6000 --depth 4 --sandbox-timeout 14400 \
+  --output "$BATCH/stockfish-2000/harness"
 ```
 
-See [ASSIGNMENT.md](ASSIGNMENT.md) for context compaction, SWE-bench,
-programmatic chess tools and observation experiments.
+### Harness against minimax
 
-## Compare search and agent harness
+In the same shell, run the harness against the original minimax depth-2 opponent:
 
-Two modes use the same alpha-beta search, quiescence, r13 evaluator
-(`development-king-safety-v2`), 6,000-node ceiling and maximum depth 4:
+```bash
+uv run python -m experiments.chess.evaluate_search_policy \
+  --policy harness --opponent minimax \
+  --model "$MODEL" --games 5 --steps 200 \
+  --max-nodes 6000 --depth 4 --sandbox-timeout 14400 \
+  --output "$BATCH/minimax/harness"
+```
 
-| `--policy` | Final move authority | Model calls in the batch runner |
-| --- | --- | --- |
-| `search` | Search picks the best completed result | None |
-| `harness` | LLM requests analysis, reads feedback and explicitly commits a verified move | DeepSeek |
+The examples select the model explicitly; change `MODEL` for another supported
+model. `--depth` controls White's search,
+not the minimax opponent's depth. Omit Stockfish strength flags for minimax.
+`--sandbox-timeout` is the lifetime per game, not the timeout for the whole batch.
 
-The harness preserves original r13 planning, verification and commit rules.
-The search control now uses the r13 evaluator as well; historical v5 results used
-an older evaluator and are not this matched control. Budget allocation and
-verification are part of the harness treatment; actual node use and model cost
-must be reported alongside game outcomes. A stronger result is evidence for the
-harness in this setup, not a guaranteed conclusion.
+### Compare harness with search
+
+For a search-only control, use `--policy search` with the same opponent, node
+budget, and depth, and choose another output directory. Budget allocation and
+verification are part of the harness treatment; report actual node use and model
+cost alongside game outcomes.
+
+Run the full comparison across three Stockfish Elo settings and minimax:
 
 ```bash
 BATCH="artifacts/assignment2/ablation-$(date +%Y%m%d-%H%M%S)"
@@ -81,12 +153,28 @@ The ordinary agent CLI exposes the same choices as `--chess-policy search|harnes
 control, or `--chess-policy search` in the agent CLI. `--programmatic-tools`
 selects the original Assignment 1 Python tool mode.
 
-New model calls default to `deepseek/deepseek-v4-flash-0731` through `.env`.
-Historical results retain their original model metadata. Stable `policy_version` identifiers
-are retained for replay; they are not additional runnable policy choices.
-See the [experiment guide](experiments/chess/README.md) for offline validation.
+The supplied `.env.example` sets `OPENAI_MODEL` to
+`deepseek/deepseek-v4-flash-0731`; the benchmark commands above override it.
+See the [experiment guide](experiments/chess/README.md) for artifact details and
+offline validation. Recorded source snapshots and model metadata identify the
+implementation used for each run.
 
-## Optional Stockfish opponent
+## Other ways to play
+
+### Original assignment workflow
+
+Generate and check the Part 1 patch, then play against the default minimax opponent:
+
+```bash
+make run-code-agent
+make check-part1
+make run-chess-agent
+```
+
+See [ASSIGNMENT.md](ASSIGNMENT.md) for context compaction, SWE-bench,
+programmatic chess tools and observation experiments.
+
+### Stockfish in Modal
 
 Minimax remains the default. Add `--opponent stockfish` to either Modal runner:
 
@@ -101,7 +189,9 @@ only. The optional image layer installs the distribution's Stockfish package;
 the actual engine name/version is recorded in game state. Your laptop runs the
 runner and displays the browser. Agent runs also use model API credits.
 
-For a **local** browser game, install Stockfish and the chess app dependencies:
+### Local browser game
+
+Install Stockfish and the chess app dependencies:
 
 ```bash
 sudo apt-get install stockfish
@@ -113,7 +203,10 @@ Open http://127.0.0.1:8000. Local Stockfish mode handles terminal moves without
 the Part 1 patch. The existing `chess-server` command keeps its original behavior;
 use the extension command above to select Stockfish.
 
-Both environments support `--stockfish-time 0.2` (default; maximum 10 seconds) and
+### Opponent settings
+
+The Modal and local server commands support `--stockfish-time 0.2` (default;
+maximum 10 seconds) and
 `--stockfish-elo 1500` (optional; accepted range depends on the installed engine).
 Stockfish uses one thread and a 64 MiB hash table. `--stockfish-path /path/to/stockfish`
 selects an executable **on the server host**; a laptop path is unavailable in Modal.
@@ -174,4 +267,9 @@ offline imports, local preview, and the required review before a public export.
 
 ## Credits
 
-Authors: Weiwei Sun and Saujas Vaduguru, with feedback from 11-768 course staff (instructors Daniel Fried and Graham Neubig, and TAs Aditya Soni, Andy Liu, Apurva Gandhi, Demi Wang, Jiarui Liu, and Yueqi Song).
+The original CMU assignment and chess project were created by **Weiwei Sun and
+Saujas Vaduguru**, with feedback from the 11-768 course staff:
+
+- **Instructors:** Daniel Fried and Graham Neubig.
+- **Teaching assistants:** Aditya Soni, Andy Liu, Apurva Gandhi, Demi Wang,
+  Jiarui Liu, and Yueqi Song.
